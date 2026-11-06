@@ -1,6 +1,226 @@
 import { NextResponse } from "next/server";
+import db from "@/lib/db";
+db.exec(`
+    CREATE TABLE IF NOT EXISTS spotify_rate_limit (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        retryUntil INTEGER NOT NULL
+    )
+`);
+
+function saveSpotifyRateLimit(retryUntil: number) {
+    db.prepare(`
+        INSERT OR REPLACE INTO spotify_rate_limit (id, retryUntil)
+        VALUES (1, ?)
+    `).run(retryUntil);
+}
+
+function getSpotifyRateLimitUntil(): number {
+    const row = db
+        .prepare("SELECT retryUntil FROM spotify_rate_limit WHERE id = 1")
+        .get() as { retryUntil: number } | undefined;
+
+    return row?.retryUntil ?? 0;
+}
+
+// キャッシュの有効期間（24時間）
+const CACHE_DURATION = 24 * 60 * 60 * 1000;
+
+// Spotifyアクセストークンの一時保存
+let cachedAccessToken: string | null = null;
+let tokenExpiresAt = 0;
+let spotifyRateLimitUntil = 0;
+
+// ジャンルのキャッシュを確認する
+function getGenreCache(genre: string) {
+    const cache = db
+        .prepare("SELECT lastFetchedAt FROM genre_cache WHERE genre = ?")
+        .get(genre) as { lastFetchedAt: string } | undefined;
+
+    if (!cache) {
+        return false;
+    }
+
+    const lastFetchedTime = new Date(cache.lastFetchedAt).getTime();
+
+    return Date.now() - lastFetchedTime < CACHE_DURATION;
+}
+
+// SQLiteからジャンル別の作品情報を取得する
+function getCachedReleases(genre: string) {
+    const rows = db
+        .prepare(`
+            SELECT *
+            FROM releases
+            WHERE genre = ?
+            ORDER BY releaseDate DESC
+        `)
+        .all(genre) as {
+            id: string;
+            name: string;
+            artists: string;
+            releaseDate: string;
+            type: string;
+            image: string | null;
+            spotifyUrl: string;
+            genre: string;
+        }[];
+
+    return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        artists: JSON.parse(row.artists) as string[],
+        releaseDate: row.releaseDate,
+        type: row.type,
+        image: row.image,
+        spotifyUrl: row.spotifyUrl,
+    }));
+}
+
+// Spotifyから取得した作品情報をSQLiteに保存する
+function saveReleases(genre: string, albums: {
+    id: string;
+    name: string;
+    artists: string[];
+    releaseDate: string;
+    type: string;
+    image: string | null;
+    spotifyUrl: string;
+}[]) {
+    const insert = db.prepare(`
+        INSERT OR REPLACE INTO releases (
+            id,
+            name,
+            artists,
+            releaseDate,
+            type,
+            image,
+            spotifyUrl,
+            genre
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const saveTransaction = db.transaction(() => {
+        for (const album of albums) {
+            insert.run(
+                album.id,
+                album.name,
+                JSON.stringify(album.artists),
+                album.releaseDate,
+                album.type,
+                album.image,
+                album.spotifyUrl,
+                genre
+            );
+        }
+    });
+
+    saveTransaction();
+
+    // 最終取得日時を記録する
+    db.prepare(`
+        INSERT OR REPLACE INTO genre_cache (genre, lastFetchedAt)
+        VALUES (?, ?)
+    `).run(genre, new Date().toISOString());
+}
+
+// アーティスト一覧を変更した際にキャッシュを更新するためのバージョン
+
+const ARTIST_CACHE_VERSION = "4";
+
+// アーティスト一覧のバージョンごとにキャッシュを区別する
+function getGenreCacheKey(genre: string) {
+    return `${genre}_v${ARTIST_CACHE_VERSION}`;
+}
+
+const japaneseArtistSeeds: Record<string, string[]> = {
+
+    hiphop: [
+        "Creepy Nuts",
+        "Awich",
+        "¥ellow Bucks",
+        "JP THE WAVY",
+        "Kohjiya",
+        "LEX",
+        "kZm",
+        "OZworld",
+        "ZORN",
+        "PUNPEE",
+        "Watson",
+        "MIKADO",
+        "BAD HOP",
+        "舐達麻",
+        "Tohji",
+        "ralph",
+        "Bonbero",
+        "Jin Dogg",
+        "ANARCHY",
+        "唾奇",
+    ],
+
+    jpop: [
+        "YOASOBI",
+        "Ado",
+        "Vaundy",
+        "米津玄師",
+        "藤井風",
+        "あいみょん",
+        "King Gnu",
+        "Mrs. GREEN APPLE",
+        "Official髭男dism",
+        "back number",
+    ],
+    rnb: [
+        "iri",
+        "SIRUP",
+        "eill",
+        "TENDRE",
+        "Yo-Sea",
+        "MALIYA",
+        "宇多田ヒカル",
+    ],
+    rock: [
+        "ONE OK ROCK",
+        "RADWIMPS",
+        "BUMP OF CHICKEN",
+        "ASIAN KUNG-FU GENERATION",
+        "Saucy Dog",
+        "[Alexandros]",
+        "MY FIRST STORY",
+    ],
+};
 
 export async function GET(request: Request) {
+
+    // SQLiteに保存された待機終了時刻を読み込む
+    spotifyRateLimitUntil = Math.max(
+        spotifyRateLimitUntil,
+        getSpotifyRateLimitUntil()
+    );
+
+    // Spotify APIの待機時間中はアクセスを禁止する
+    if (Date.now() < spotifyRateLimitUntil) {
+        const remainingSeconds = Math.ceil(
+            (spotifyRateLimitUntil - Date.now()) / 1000
+        );
+
+        console.log("Spotify API制限中・残り秒数:", remainingSeconds);
+
+        return NextResponse.json(
+            {
+                message: "Spotify APIの利用制限中です。時間をおいて再試行してください。",
+                status: 429,
+                retryAfter: String(remainingSeconds),
+            },
+            {
+                status: 429,
+                headers: {
+                    "Retry-After": String(remainingSeconds),
+                },
+            }
+        );
+    }
+
     const clientId = process.env.SPOTIFY_CLIENT_ID;
     const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
 
@@ -14,9 +234,13 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const query = searchParams.get("q")?.trim();
     const artistId = searchParams.get("artistId")?.trim();
+    const genre = searchParams.get("genre")?.trim();
     const offset = Math.max(0, Number(searchParams.get("offset") ?? "0") || 0);
 
     const releaseGroup = searchParams.get("releaseGroup");
+
+    const releaseDate = searchParams.get("date")?.trim();
+    const requestedType = searchParams.get("releaseGroup") ?? "all";
 
     const includeGroups =
         releaseGroup === "single"
@@ -25,7 +249,7 @@ export async function GET(request: Request) {
                 ? "album"
                 : "album,single";
 
-    if (!query) {
+    if (!query && !genre) {
         return NextResponse.json(
             { message: "検索キーワードを指定してください。例：?q=YOASOBI" },
             { status: 400 }
@@ -33,34 +257,476 @@ export async function GET(request: Request) {
     }
 
     try {
-        const credentials = Buffer.from(
-            `${clientId}:${clientSecret}`
-        ).toString("base64");
+        let tokenData: {
+            access_token: string;
+            expires_in?: number;
+        };
 
-        const tokenResponse = await fetch(
-            "https://accounts.spotify.com/api/token",
-            {
-                method: "POST",
-                headers: {
-                    Authorization: `Basic ${credentials}`,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-                body: new URLSearchParams({
-                    grant_type: "client_credentials",
-                }),
-                cache: "no-store",
-            }
-        );
+        // 保存済みトークンが有効なら再利用する
+        if (cachedAccessToken && Date.now() < tokenExpiresAt) {
+            console.log("保存済みのSpotifyアクセストークンを使用");
 
-        if (!tokenResponse.ok) {
-            return NextResponse.json(
-                { message: "Spotifyの認証に失敗しました。" },
-                { status: 502 }
+            tokenData = {
+                access_token: cachedAccessToken,
+            };
+        } else {
+            console.log("Spotifyアクセストークンを新規取得");
+
+            const credentials = Buffer.from(
+                `${clientId}:${clientSecret}`
+            ).toString("base64");
+
+            const tokenResponse = await fetch(
+                "https://accounts.spotify.com/api/token",
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Basic ${credentials}`,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    body: new URLSearchParams({
+                        grant_type: "client_credentials",
+                    }),
+                    cache: "no-store",
+                }
             );
+
+            if (!tokenResponse.ok) {
+                return NextResponse.json(
+                    { message: "Spotifyの認証に失敗しました。" },
+                    { status: 502 }
+                );
+            }
+
+            tokenData = await tokenResponse.json();
+
+            // トークンと有効期限を保存する
+            cachedAccessToken = tokenData.access_token;
+
+            const expiresIn = tokenData.expires_in ?? 3600;
+
+            // 有効期限の60秒前に更新する
+            tokenExpiresAt = Date.now() + (expiresIn - 60) * 1000;
         }
 
-        const tokenData = await tokenResponse.json();
+        if (genre) {
+            const spotifyGenres: Record<string, string> = {
+                hiphop: "hip-hop",
+                jpop: "j-pop",
+                rnb: "r-n-b",
+                rock: "rock",
+            };
 
+            const spotifyGenre = spotifyGenres[genre];
+
+            const artistSeeds = japaneseArtistSeeds[genre] ?? [];
+
+            console.log("ジャンル別アーティスト候補:", artistSeeds);
+
+            if (!spotifyGenre) {
+                return NextResponse.json(
+                    { message: "対応していないジャンルです。" },
+                    { status: 400 }
+                );
+            }
+
+            const genreCacheKey = getGenreCacheKey(genre);
+
+            // 24時間以内のキャッシュがあればSQLiteから取得する
+            if (getGenreCache(genreCacheKey)) {
+                console.log("SQLiteのキャッシュを使用:", genreCacheKey);
+
+                const cachedAlbums = getCachedReleases(genreCacheKey);
+
+
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+
+                const thirtyDaysAgo = new Date(today);
+                thirtyDaysAgo.setDate(today.getDate() - 30);
+
+                const filteredAlbums = cachedAlbums.filter((album) => {
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(album.releaseDate)) {
+                        return false;
+                    }
+
+                    if (releaseDate && album.releaseDate !== releaseDate) {
+                        return false;
+                    }
+
+                    if (
+                        requestedType !== "all" &&
+                        album.type !== requestedType
+                    ) {
+                        return false;
+                    }
+
+                    const albumDate = new Date(`${album.releaseDate}T00:00:00`);
+
+                    return albumDate >= thirtyDaysAgo && albumDate <= today;
+                });
+
+                return NextResponse.json({
+                    albums: filteredAlbums.sort((a, b) =>
+                        b.releaseDate.localeCompare(a.releaseDate)
+                    ),
+                    hasMore: false,
+                    fetchedCount: filteredAlbums.length,
+                });
+            }
+
+            const manualArtistsByGenre: Record<
+                string,
+                { id: string; name: string }[]
+            > = {
+
+
+                hiphop: [
+                    { id: "2KpK4apOMD6evPHoPggSVF", name: "LEX" },
+                    { id: "4hg5WX4ro6OVIg66dcYUk4", name: "kZm" },
+                    { id: "0pWR7TsFhvSCnbmHDjWgrE", name: "Creepy Nuts" },
+                    { id: "0FnDCrmcQT8qz5TEsZIYw5", name: "Awich" },
+                    { id: "1Fe6FA7A57suR2KAaERpqH", name: "¥ellow Bucks" },
+                    { id: "0hBYSjDjcAaAuSZcpN8jk9", name: "JP THE WAVY" },
+                    { id: "1jn7KGhS5f79E6efpgukdK", name: "Kohjiya" },
+                    { id: "34tJ8UnaAbWcrug3Nym7ZO", name: "OZworld" },
+                    { id: "1HPfjeInjrDEMW1ffZv33C", name: "ZORN" },
+                    { id: "0mP8A1qIoufScrsxq18Cw6", name: "PUNPEE" },
+                    { id: "0pq3BIPRIccDxXRCzlCePX", name: "Watson" },
+                    { id: "2snBLq7pgphB4ObS2otWiM", name: "MIKADO" },
+                    { id: "3FCZbxRcaSgYfklG2HCFh2", name: "BAD HOP" },
+                    { id: "7nDfh01E30OkhgsPKSQzCx", name: "舐達麻" },
+                    { id: "7j7kL8K4GE1z5Cdxl7ucBF", name: "Tohji" },
+                    { id: "62z45XSe0e3HqK8VbhfFT0", name: "Ralph" },
+                    { id: "4XOzeKvdkxm12dE22GJrpM", name: "Bonbero" },
+                    { id: "05mWue0RvlBL9VqcG3xCwK", name: "Jin Dogg" },
+                    { id: "1zHcoqaTvlZdEd7CUjk2eI", name: "ANARCHY" },
+                    { id: "08M0FfjBpFDb302KNq76RL", name: "唾奇" },
+                ],
+
+                jpop: [
+                    { id: "6bDWAcdtVR3WHz2xtiIPUi", name: "藤井風" },
+                    { id: "5kVZa4lFUmAQlBogl1fkd6", name: "あいみょん" },
+                    { id: "5Vo1hnCRmCM6M4thZCInCj", name: "Official髭男dism" },
+                ],
+            };
+
+            const artists = manualArtistsByGenre[genre] ?? [];
+
+            for (const artistName of artistSeeds) {
+                // IDが登録済みならSpotify検索を省略
+                if (
+                    artists.some(
+                        (artist) =>
+                            artist.name.toLowerCase() === artistName.toLowerCase()
+                    )
+                ) {
+                    console.log("登録済みIDを使用:", artistName);
+                    continue;
+                }
+
+                const artistSearchUrl = new URL(
+                    "https://api.spotify.com/v1/search"
+                );
+
+                artistSearchUrl.searchParams.set(
+                    "q",
+                    `artist:${artistName}`
+                );
+                artistSearchUrl.searchParams.set("type", "artist");
+                artistSearchUrl.searchParams.set("limit", "5");
+                artistSearchUrl.searchParams.set("market", "JP");
+
+                const artistResponse = await fetch(artistSearchUrl, {
+                    headers: {
+                        Authorization: `Bearer ${tokenData.access_token}`,
+                    },
+                    cache: "no-store",
+                });
+
+                const artistData = await artistResponse.json();
+
+                if (!artistResponse.ok) {
+                    console.error("アーティスト検索エラー:", artistName, artistData);
+
+                    if (artistResponse.status === 429) {
+                        const retryAfter = artistResponse.headers.get("Retry-After");
+                        const retrySeconds = Number(retryAfter);
+
+                        if (
+                            retryAfter !== null &&
+                            Number.isFinite(retrySeconds) &&
+                            retrySeconds >= 0
+                        ) {
+                            spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
+                            saveSpotifyRateLimit(spotifyRateLimitUntil);
+                        }
+
+                        console.log("Spotify API制限・待機時間（秒）:", retryAfter);
+
+                        return NextResponse.json(
+                            {
+                                message: "Spotify APIの利用制限に達しました。",
+                                status: 429,
+                                retryAfter,
+                            },
+                            { status: 429 }
+                        );
+                    }
+
+                    continue;
+                }
+
+                const matchedArtist = (artistData.artists?.items ?? []).find(
+                    (item: { id: string; name: string }) =>
+                        item.name.trim().toLowerCase() ===
+                        artistName.trim().toLowerCase()
+                );
+
+                console.log(
+                    `Spotify検索結果 (${artistName}):`,
+                    (artistData.artists?.items ?? []).map(
+                        (item: { name: string }) => item.name
+                    )
+                );
+
+                if (matchedArtist) {
+                    artists.push({
+                        id: matchedArtist.id,
+                        name: matchedArtist.name,
+                    });
+                } else {
+                    console.log("アーティストが見つかりません:", artistName);
+                }
+            }
+
+            const uniqueArtists = Array.from(
+                new Map(artists.map((artist) => [artist.id, artist])).values()
+            );
+
+            console.log("候補リストから取得したアーティスト:", artists);
+
+            const allAlbums: {
+                id: string;
+                name: string;
+                releaseDate: string;
+                type: string;
+                image: string | null;
+                artists: string[];
+                spotifyUrl: string;
+            }[] = [];
+
+            for (const artist of uniqueArtists) {
+                const artistName = artist.name;
+
+                let matchedArtist: {
+                    id: string;
+                    name: string;
+                } | undefined;
+
+                // IDが登録されていれば直接使用
+                if (artist.id) {
+                    matchedArtist = {
+                        id: artist.id,
+                        name: artist.name,
+                    };
+                } else {
+                    // IDがなければ名前でSpotify検索
+                    const artistSearchUrl = new URL(
+                        "https://api.spotify.com/v1/search"
+                    );
+
+                    artistSearchUrl.searchParams.set(
+                        "q",
+                        artistName === "LEX" || artistName === "kZm"
+                            ? artistName
+                            : `artist:${artistName}`
+                    );
+                    artistSearchUrl.searchParams.set("type", "artist");
+                    artistSearchUrl.searchParams.set("limit", "10");
+                    artistSearchUrl.searchParams.set("market", "JP");
+
+                    const artistResponse = await fetch(artistSearchUrl, {
+                        headers: {
+                            Authorization: `Bearer ${tokenData.access_token}`,
+                        },
+                        cache: "no-store",
+                    });
+
+                    const artistData = await artistResponse.json();
+
+                    if (!artistResponse.ok) {
+                        console.error("アーティスト検索エラー:", artistName, artistData);
+                        continue;
+                    }
+
+                    matchedArtist = (artistData.artists?.items ?? []).find(
+                        (item: { name: string }) =>
+                            item.name.trim().toLowerCase() ===
+                            artistName.trim().toLowerCase()
+                    );
+                }
+
+                if (!matchedArtist) {
+                    console.log("アーティストが見つかりません:", artistName);
+                    continue;
+                }
+
+                console.log("作品取得対象:", matchedArtist.name);
+
+                // アーティストの作品を取得
+                const albumsUrl = new URL(
+                    `https://api.spotify.com/v1/artists/${matchedArtist.id}/albums`
+                );
+
+                albumsUrl.searchParams.set("include_groups", includeGroups);
+                albumsUrl.searchParams.set("limit", "10");
+                albumsUrl.searchParams.set("market", "JP");
+
+                console.log("Spotify作品取得URL:", albumsUrl.toString());
+
+                const albumsResponse = await fetch(albumsUrl, {
+                    headers: {
+                        Authorization: `Bearer ${tokenData.access_token}`,
+                    },
+                    cache: "no-store",
+                });
+
+                const albumsData = await albumsResponse.json();
+
+                if (!albumsResponse.ok) {
+                    console.error("作品取得エラー:", artistName, albumsData);
+
+                    if (albumsResponse.status === 429) {
+                        const retryAfter = albumsResponse.headers.get("Retry-After");
+                        const retrySeconds = Number(retryAfter);
+
+                        // Spotifyが指定した待機時間を記録する
+                        if (
+                            retryAfter !== null &&
+                            Number.isFinite(retrySeconds) &&
+                            retrySeconds >= 0
+                        ) {
+                            spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
+                        }
+
+                        console.log("Spotify API制限・待機時間（秒）:", retryAfter);
+
+                        return NextResponse.json(
+
+                            {
+                                message: "Spotify APIの利用制限に達しました。",
+                                status: 429,
+                                retryAfter: albumsResponse.headers.get("Retry-After"),
+                            },
+
+                            {
+                                status: 429,
+                                headers: {
+                                    "Retry-After": albumsResponse.headers.get("Retry-After") ?? "60",
+                                },
+                            }
+
+                        );
+                    }
+                    continue;
+                }
+
+                const albums = (albumsData.items ?? []).map(
+                    (album: {
+                        id: string;
+                        name: string;
+                        release_date: string;
+                        album_type: string;
+                        images: { url: string }[];
+                        artists: { name: string }[];
+                        external_urls: { spotify: string };
+                    }) => ({
+                        id: album.id,
+                        name: album.name,
+                        releaseDate: album.release_date,
+                        type: album.album_type,
+                        image: album.images?.[0]?.url ?? null,
+                        artists: album.artists.map(
+                            (item) => item.name
+                        ),
+                        spotifyUrl: album.external_urls.spotify,
+                    })
+                );
+                allAlbums.push(...albums);
+            }
+
+            // 重複作品を除外
+            const uniqueAlbums = Array.from(
+                new Map(
+                    allAlbums.map((album) => [album.id, album])
+                ).values()
+            );
+
+            if (uniqueAlbums.length === 0) {
+                return NextResponse.json(
+                    {
+                        message: "作品を取得できませんでした。Spotify APIの取得状況を確認してください。",
+                    },
+                    { status: 502 }
+                );
+            }
+
+            // 取得した作品情報をバージョン別にSQLiteへ保存
+            saveReleases(genreCacheKey, uniqueAlbums);
+
+            // 発売日と作品タイプで絞り込み
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const thirtyDaysAgo = new Date(today);
+            thirtyDaysAgo.setDate(today.getDate() - 30);
+
+            const filteredAlbums = uniqueAlbums.filter((album) => {
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(album.releaseDate)) {
+                    return false;
+                }
+
+                if (releaseDate && album.releaseDate !== releaseDate) {
+                    return false;
+                }
+
+                if (
+                    requestedType !== "all" &&
+                    album.type !== requestedType
+                ) {
+                    return false;
+                }
+
+                const albumDate = new Date(`${album.releaseDate}T00:00:00`);
+                return albumDate >= thirtyDaysAgo && albumDate <= today;
+            });
+
+            filteredAlbums.sort((a, b) => {
+                // まず発売日の新しい順
+                const dateComparison = b.releaseDate.localeCompare(a.releaseDate);
+
+                if (dateComparison !== 0) {
+                    return dateComparison;
+                }
+
+                // 発売日が同じなら作品名順
+                return a.name.localeCompare(b.name, "ja");
+            });
+
+            console.log("取得したアーティスト数:", artists.length);
+            console.log("取得した作品数:", uniqueAlbums.length);
+            console.log("取得した作品の日付:", uniqueAlbums.map((album) => ({
+                name: album.name,
+                date: album.releaseDate,
+            })));
+            console.log("絞り込み後の作品数:", filteredAlbums.length);
+
+            return NextResponse.json({
+                albums: filteredAlbums,
+                hasMore: false,
+                fetchedCount: filteredAlbums.length,
+            });
+        }
 
         let artistCandidates: {
             id: string;
@@ -73,7 +739,7 @@ export async function GET(request: Request) {
         if (!targetArtistId) {
             const searchUrl = new URL("https://api.spotify.com/v1/search");
 
-            searchUrl.searchParams.set("q", query);
+            searchUrl.searchParams.set("q", query ?? "");
             searchUrl.searchParams.set("type", "artist");
             searchUrl.searchParams.set("limit", "10");
             searchUrl.searchParams.set("offset", "0");
@@ -120,7 +786,7 @@ export async function GET(request: Request) {
             const matchedArtist = artists.find(
                 (artist: { id: string; name: string }) =>
                     artist.name.trim().toLowerCase() ===
-                    query.trim().toLowerCase()
+                    (query ?? "").trim().toLowerCase()
             );
 
             console.log("一致したアーティスト:", matchedArtist);
@@ -142,7 +808,6 @@ export async function GET(request: Request) {
         }
 
         console.log("作品取得対象のアーティストID:", targetArtistId);
-
 
         const albumsUrl = new URL(
             `https://api.spotify.com/v1/artists/${targetArtistId}/albums`
@@ -204,6 +869,10 @@ export async function GET(request: Request) {
                     image: album.images[0]?.url ?? null,
                     spotifyUrl: album.external_urls.spotify,
                 })
+            )
+            .filter(
+                (album: { releaseDate: string }) =>
+                    !releaseDate || album.releaseDate === releaseDate
             );
 
         console.log("Spotifyページ情報:", {

@@ -1,57 +1,22 @@
-
 import { NextResponse } from "next/server";
+import db from "@/lib/db";
 
 export async function GET() {
-  const clientId = process.env.SPOTIFY_CLIENT_ID;
-  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
-
-  if (!clientId || !clientSecret) {
-    return NextResponse.json(
-      { message: "Spotifyの認証情報が設定されていません。" },
-      { status: 500 }
-    );
-  }
-
   try {
-    const credentials = Buffer.from(
-      `${clientId}:${clientSecret}`
-    ).toString("base64");
-
-    const tokenResponse = await fetch(
-      "https://accounts.spotify.com/api/token",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${credentials}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-          grant_type: "client_credentials",
-        }),
-        cache: "no-store",
-      }
-    );
-
-    if (!tokenResponse.ok) {
-      return NextResponse.json(
-        {
-          message: "Spotifyの認証に失敗しました。",
-          status: tokenResponse.status,
-        },
-        { status: 502 }
-      );
-    }
-
-    const tokenData = await tokenResponse.json();
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all();
 
     return NextResponse.json({
-      message: "Spotifyの認証に成功しました！",
-      tokenReceived: Boolean(tokenData.access_token),
-      expiresIn: tokenData.expires_in,
+      message: "SQLiteの接続に成功しました！",
+      tables,
     });
-  } catch {
+  } catch (error) {
     return NextResponse.json(
-      { message: "Spotifyへの接続中にエラーが発生しました。" },
+      {
+        message: "SQLiteの接続に失敗しました。",
+        error: String(error),
+      },
       { status: 500 }
     );
   }
