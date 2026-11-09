@@ -18,6 +18,13 @@ type ArtistCandidate = {
   image: string | null;
 };
 
+type FavoriteArtist = {
+  id: string;
+  name: string;
+  genre: string;
+  createdAt: string;
+};
+
 const genreArtists: Record<string, string[]> = {
   hiphop: [
     "MIKADO",
@@ -62,6 +69,164 @@ export default function Home() {
   const [hasMore, setHasMore] = useState(false);
   const [artistCandidates, setArtistCandidates] = useState<ArtistCandidate[]>([]);
   const [selectedArtistId, setSelectedArtistId] = useState<string | null>(null);
+  const [favoriteArtists, setFavoriteArtists] = useState<FavoriteArtist[]>([]);
+  const [favoriteQuery, setFavoriteQuery] = useState("");
+  const [favoriteCandidates, setFavoriteCandidates] = useState<ArtistCandidate[]>([]);
+  const [favoriteSearchLoading, setFavoriteSearchLoading] = useState(false);
+  const [favoriteSearchError, setFavoriteSearchError] = useState("");
+  const [favoriteGenre, setFavoriteGenre] = useState("hiphop");
+
+  async function searchFavoriteArtists() {
+    const keyword = favoriteQuery.trim();
+
+    if (!keyword) {
+      setFavoriteSearchError("アーティスト名を入力してください。");
+      return;
+    }
+
+    setFavoriteSearchLoading(true);
+    setFavoriteSearchError("");
+    setFavoriteCandidates([]);
+
+    try {
+      const response = await fetch(
+        `/api/spotify-search?q=${encodeURIComponent(keyword)}`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message ?? "検索に失敗しました。");
+      }
+
+      setFavoriteCandidates(data.artistCandidates ?? []);
+    } catch (error) {
+      setFavoriteSearchError(
+        error instanceof Error
+          ? error.message
+          : "アーティストの検索に失敗しました。"
+      );
+    } finally {
+      setFavoriteSearchLoading(false);
+    }
+  }
+
+  async function registerFavoriteArtist(artist: ArtistCandidate) {
+    try {
+      const response = await fetch("/api/registered-artists", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          id: artist.id,
+          name: artist.name,
+          genre: favoriteGenre,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message ?? "登録に失敗しました。");
+      }
+
+      const listResponse = await fetch("/api/registered-artists");
+
+      if (!listResponse.ok) {
+        throw new Error("登録済み一覧の更新に失敗しました。");
+      }
+
+      const listData = await listResponse.json();
+      setFavoriteArtists(listData.artists ?? []);
+
+      // お気に入りを追加したジャンルのキャッシュを削除
+      setGenreCache((prev) => {
+        const updated = { ...prev };
+        delete updated[favoriteGenre];
+        return updated;
+      });
+
+      // 表示中のジャンルなら古い作品一覧もクリア
+      if (selectedGenre === favoriteGenre) {
+        setNewReleases([]);
+        setHasFetchedNewReleases(false);
+      }
+
+    } catch (error) {
+      setFavoriteSearchError(
+        error instanceof Error
+          ? error.message
+          : "アーティストの登録に失敗しました。"
+      );
+    }
+  }
+
+  async function deleteFavoriteArtist(artist: FavoriteArtist) {
+    const confirmed = window.confirm(
+      `${artist.name} をお気に入りから削除しますか？`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch("/api/registered-artists", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ id: artist.id }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.message ?? "削除に失敗しました。");
+      }
+
+      setFavoriteArtists((current) =>
+        current.filter((favorite) => favorite.id !== artist.id)
+      );
+
+      // 削除したアーティストのジャンルのキャッシュを削除
+      setGenreCache((prev) => {
+        const updated = { ...prev };
+        delete updated[artist.genre];
+        return updated;
+      });
+
+      // 表示中のジャンルなら古い作品一覧もクリア
+      if (selectedGenre === artist.genre) {
+        setNewReleases([]);
+        setHasFetchedNewReleases(false);
+      }
+
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : "お気に入りの削除に失敗しました。"
+      );
+    }
+  }
+
+  useEffect(() => {
+    async function loadFavoriteArtists() {
+      try {
+        const response = await fetch("/api/registered-artists");
+
+        if (!response.ok) {
+          throw new Error("お気に入りの取得に失敗しました。");
+        }
+
+        const data = await response.json();
+        setFavoriteArtists(data.artists ?? []);
+      } catch (error) {
+        console.error("お気に入り取得エラー:", error);
+      }
+    }
+
+    loadFavoriteArtists();
+  }, []);
 
   useEffect(() => {
     const today = new Date();
@@ -404,7 +569,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="mt-8 flex gap-3 border-b border-white/10 pb-3">
+        <div className="mt-8 flex flex-wrap items-center gap-3 border-b border-white/10 pb-3">
           <button
             type="button"
             onClick={() => setActiveTab("new-releases")}
@@ -426,7 +591,160 @@ export default function Home() {
           >
             アーティスト検索
           </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("artist-management")}
+            className={`ml-auto rounded-lg px-5 py-3 font-semibold transition ${activeTab === "artist-management"
+              ? "bg-[#1ed760] text-black"
+              : "bg-[#242424] text-white hover:bg-[#333333]"
+              }`}
+          >
+            ♡ お気に入り
+          </button>
         </div>
+
+        {activeTab === "artist-management" && (
+          <div className="mt-8 space-y-6">
+            <section className="rounded-xl bg-[#181818] p-6">
+
+              <div>
+                <label
+                  htmlFor="favorite-search"
+                  className="mb-4 block text-2xl font-bold text-white"
+                >
+                  アーティストを追加
+                </label>
+
+                <input
+                  id="favorite-search"
+                  type="text"
+                  value={favoriteQuery}
+                  onChange={(event) => setFavoriteQuery(event.target.value)}
+                  placeholder="アーティスト名を入力（例：Awich）"
+                  className="w-full rounded-lg border border-white/10 bg-[#242424] px-5 py-3 text-white outline-none focus:border-[#1ed760]"
+                />
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <label
+                    htmlFor="favorite-genre"
+                    className="text-sm font-semibold text-zinc-300"
+                  >
+                    登録するジャンル：
+                  </label>
+
+                  <select
+                    id="favorite-genre"
+                    value={favoriteGenre}
+                    onChange={(event) => setFavoriteGenre(event.target.value)}
+                    className="rounded-lg border border-white/10 bg-[#242424] px-4 py-2 text-white outline-none focus:border-[#1ed760]"
+                  >
+                    {genres.map((genre) => (
+                      <option key={genre.id} value={genre.id}>
+                        {genre.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={searchFavoriteArtists}
+                    disabled={favoriteSearchLoading}
+                    className="rounded-lg bg-[#1ed760] px-6 py-3 font-semibold text-black transition hover:bg-[#1bd15a] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {favoriteSearchLoading ? "検索中..." : "アーティストを検索"}
+                  </button>
+                </div>
+                {favoriteSearchError && (
+                  <p className="mt-3 text-sm text-red-400">
+                    {favoriteSearchError}
+                  </p>
+                )}
+
+                {favoriteCandidates.length > 0 && (
+                  <div className="mt-5">
+                    <h3 className="font-semibold">検索結果</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {favoriteCandidates.map((artist) => (
+                        <div
+                          key={artist.id}
+                          className="flex items-center gap-2 rounded-lg bg-[#242424] px-3 py-2"
+                        >
+                          {artist.image ? (
+                            <img
+                              src={artist.image}
+                              alt={artist.name}
+                              className="h-8 w-8 rounded-full object-cover"
+                            />
+                          ) : (
+                            <div className="h-8 w-8 rounded-full bg-[#333333]" />
+                          )}
+
+                          <span className="text-sm font-semibold">{artist.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => registerFavoriteArtist(artist)}
+                            disabled={favoriteArtists.some((favorite) => favorite.id === artist.id)}
+                            className="ml-2 rounded-md bg-[#1ed760] px-3 py-1 text-xs font-semibold text-black transition hover:bg-[#1bd15a] disabled:cursor-not-allowed disabled:bg-[#444444] disabled:text-zinc-400"
+                          >
+                            {favoriteArtists.some((favorite) => favorite.id === artist.id)
+                              ? "登録済み"
+                              : "＋ 追加"}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+            <section className="rounded-xl bg-[#181818] p-6">
+              <h2 className="text-2xl font-bold">
+                ♡ お気に入りアーティスト
+              </h2>
+
+              <p className="mt-3 text-sm text-zinc-400">
+                好きなアーティストを登録して、新着作品をチェックしよう。
+              </p>
+
+              <div className="mt-6 space-y-3">
+                {favoriteArtists.length === 0 ? (
+                  <p className="text-sm text-zinc-500">
+                    まだお気に入りアーティストが登録されていません。
+                  </p>
+                ) : (
+                  favoriteArtists.map((artist) => (
+                    <div
+                      key={artist.id}
+                      className="flex items-center justify-between rounded-lg bg-[#242424] p-4"
+                    >
+                      <div>
+                        <p className="font-semibold">{artist.name}</p>
+                        <p className="mt-1 text-xs text-zinc-400">
+                          {genres.find((genre) => genre.id === artist.genre)?.name ??
+                            artist.genre}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-4">
+                        <span className="text-sm text-[#1ed760]">
+                          登録済み
+                        </span>
+
+                        <button
+                          type="button"
+                          onClick={() => deleteFavoriteArtist(artist)}
+                          className="rounded-lg border border-red-500/40 px-3 py-2 text-sm font-semibold text-red-400 transition hover:bg-red-500/10"
+                        >
+                          削除
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        )}
 
         {activeTab === "new-releases" && (
           <div className="mt-6 flex flex-wrap items-center gap-3">

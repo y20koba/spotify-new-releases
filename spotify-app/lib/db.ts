@@ -34,9 +34,17 @@ db.exec(`
     genre TEXT PRIMARY KEY,
     lastFetchedAt TEXT NOT NULL
   );
+
   CREATE TABLE IF NOT EXISTS spotify_rate_limit (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     retryUntil INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS registered_artists (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    genre TEXT NOT NULL,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
