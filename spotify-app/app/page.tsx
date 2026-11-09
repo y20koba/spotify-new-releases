@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Image from "next/image";
 
 type SpotifyAlbum = {
   id: string;
@@ -25,25 +26,21 @@ type FavoriteArtist = {
   createdAt: string;
 };
 
-const genreArtists: Record<string, string[]> = {
-  hiphop: [
-    "MIKADO",
-    "LEX",
-    "Watson",
-    "¥ellow Bucks",
-  ],
-  jpop: [],
-  rnb: [],
-  rock: [],
-};
-const hiphopArtists = genreArtists.hiphop;
-
 const genres = [
   { id: "hiphop", name: "HIPHOP" },
   { id: "jpop", name: "J-POP" },
   { id: "rnb", name: "R&B" },
   { id: "rock", name: "ロック" },
 ];
+
+function getLocalDateString() {
+  const today = new Date();
+  const localDate = new Date(
+    today.getTime() - today.getTimezoneOffset() * 60000
+  );
+
+  return localDate.toISOString().slice(0, 10);
+}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("new-releases");
@@ -64,8 +61,8 @@ export default function Home() {
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState("all");
   const [selectedType, setSelectedType] = useState("all");
-  const [selectedReleaseDate, setSelectedReleaseDate] = useState("");
-  const [todayDate, setTodayDate] = useState("");
+  const [selectedReleaseDate, setSelectedReleaseDate] = useState(getLocalDateString);
+  const [todayDate] = useState(getLocalDateString);
   const [hasMore, setHasMore] = useState(false);
   const [artistCandidates, setArtistCandidates] = useState<ArtistCandidate[]>([]);
   const [selectedArtistId, setSelectedArtistId] = useState<string | null>(null);
@@ -228,17 +225,6 @@ export default function Home() {
     loadFavoriteArtists();
   }, []);
 
-  useEffect(() => {
-    const today = new Date();
-    const localDate = new Date(
-      today.getTime() - today.getTimezoneOffset() * 60000
-    );
-    const dateString = localDate.toISOString().slice(0, 10);
-
-    setTodayDate(dateString);
-    setSelectedReleaseDate(dateString);
-  }, []);
-
   async function searchAlbums(artistId?: string) {
     const keyword = query.trim();
 
@@ -372,141 +358,6 @@ export default function Home() {
           ? err.message
           : "新着作品の取得中にエラーが発生しました。"
       );
-    } finally {
-      setNewReleasesLoading(false);
-    }
-  }
-
-  async function fetchNewReleases() {
-    setNewReleases([]);
-    setHasFetchedNewReleases(false);
-    setNewReleasesLoading(true);
-    setNewReleasesError("");
-
-    try {
-      const allReleases: SpotifyAlbum[] = [];
-      const failedArtists: string[] = [];
-
-      for (const artistName of hiphopArtists) {
-        console.log("新着作品を取得するアーティスト:", artistName);
-
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-
-        const artistIds: Record<string, string> = {
-          LEX: "2KpK4apOMD6evPHoPggSVF",
-        };
-
-        for (const releaseGroup of ["album", "single"]) {
-          let offset = 0;
-          const maxPages = 2;
-
-          for (let page = 0; page < maxPages; page++) {
-            const params = new URLSearchParams({
-              q: artistName,
-              releaseGroup,
-              offset: String(offset),
-            });
-
-            if (artistIds[artistName]) {
-              params.set("artistId", artistIds[artistName]);
-            }
-
-            const response = await fetch(
-              `/api/spotify-search?${params.toString()}`
-            );
-
-            if (!response.ok) {
-              const errorData = await response.json();
-
-              console.warn(`${artistName} の${releaseGroup}取得に失敗`, {
-                status: response.status,
-                details: errorData.details,
-                retryAfter: errorData.retryAfter,
-              });
-
-              if (response.status === 429) {
-                const retryAfter = Number(errorData.retryAfter);
-
-                const waitMessage =
-                  errorData.retryAfter != null &&
-                    Number.isFinite(retryAfter) &&
-                    retryAfter > 0
-                    ? `約${Math.ceil(retryAfter / 60)}分後に再度お試しください。`
-                    : "時間を空けて再度お試しください。";
-
-                setNewReleasesError(
-                  `Spotify APIの利用制限に達しました。${waitMessage}`
-                );
-                return;
-              }
-
-              failedArtists.push(`${artistName} (${releaseGroup})`);
-              break;
-            }
-
-            const data = await response.json();
-
-            console.log(`${artistName} の${releaseGroup}取得結果:`, {
-              fetchedCount: data.fetchedCount,
-              hasMore: data.hasMore,
-              albums: (data.albums ?? []).map((album: SpotifyAlbum) => ({
-                name: album.name,
-                releaseDate: album.releaseDate,
-              })),
-            });
-
-            allReleases.push(...(data.albums ?? []));
-
-            // 次のページを取得するためにoffsetを更新
-            offset += data.fetchedCount;
-
-            // 続きがない場合は繰り返しを終了
-            if (!data.hasMore || data.fetchedCount === 0) {
-              break;
-            }
-
-            // Spotify APIへの連続アクセスを少し抑える
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          }
-        }
-      }
-
-      const uniqueReleases = Array.from(
-        new Map(allReleases.map((album) => [album.id, album])).values()
-      );
-
-      uniqueReleases.sort((a, b) =>
-        b.releaseDate.localeCompare(a.releaseDate)
-      );
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      const thirtyDaysAgo = new Date(today);
-      thirtyDaysAgo.setDate(today.getDate() - 30);
-
-      const recentReleases = uniqueReleases.filter((album) => {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(album.releaseDate)) {
-          return false;
-        }
-
-        const releaseDate = new Date(`${album.releaseDate}T00:00:00`);
-
-        return releaseDate >= thirtyDaysAgo && releaseDate <= today;
-      });
-
-      setNewReleases(recentReleases);
-      setHasFetchedNewReleases(true);
-
-      if (failedArtists.length > 0) {
-        setNewReleasesError(
-          `一部のアーティストの作品を取得できませんでした：${failedArtists.join(", ")}`
-        );
-      }
-
-    } catch (err) {
-      console.error("新着作品の取得中にエラーが発生しました:", err);
-      setNewReleasesError("新着作品の取得中にエラーが発生しました。");
     } finally {
       setNewReleasesLoading(false);
     }
@@ -670,9 +521,12 @@ export default function Home() {
                           className="flex items-center gap-2 rounded-lg bg-[#242424] px-3 py-2"
                         >
                           {artist.image ? (
-                            <img
+                            <Image
                               src={artist.image}
                               alt={artist.name}
+                              width={32}
+                              height={32}
+                              unoptimized
                               className="h-8 w-8 rounded-full object-cover"
                             />
                           ) : (
@@ -941,9 +795,12 @@ export default function Home() {
                   className="min-w-0 rounded-lg bg-[#181818] p-3 transition hover:bg-[#242424]"
                 >
                   {album.image ? (
-                    <img
+                    <Image
                       src={album.image}
                       alt={`${album.name} のジャケット`}
+                      width={300}
+                      height={300}
+                      unoptimized
                       className="aspect-square w-full rounded-md object-cover"
                     />
                   ) : (
@@ -1003,9 +860,12 @@ export default function Home() {
                     }`}
                 >
                   {artist.image ? (
-                    <img
+                    <Image
                       src={artist.image}
                       alt={artist.name}
+                      width={48}
+                      height={48}
+                      unoptimized
                       className="h-12 w-12 rounded-full object-cover"
                     />
                   ) : (
@@ -1083,9 +943,12 @@ export default function Home() {
                   className="min-w-0 rounded-lg bg-[#181818] p-3 transition hover:bg-[#242424]"
                 >
                   {album.image ? (
-                    <img
+                    <Image
                       src={album.image}
                       alt={`${album.name} のジャケット`}
+                      width={300}
+                      height={300}
+                      unoptimized
                       className="aspect-square w-full rounded-md object-cover"
                     />
                   ) : (

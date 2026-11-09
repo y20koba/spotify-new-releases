@@ -185,6 +185,11 @@ const japaneseArtistSeeds: Record<string, string[]> = {
         "Jin Dogg",
         "ANARCHY",
         "唾奇",
+        "千葉雄喜",
+        "JUMADIBA",
+        "STUTS",
+        "Daichi Yamamoto",
+        "KEIJU",
     ],
 
     jpop: [
@@ -582,9 +587,121 @@ export async function GET(request: Request) {
                 }
             }
 
+            // ジャンル別に新しいアーティストを探すための検索キーワード
+            const discoveryQueries: Record<string, string[]> = {
+                hiphop: ["Japanese hip hop", "Japanese rap"],
+                jpop: ["J-pop"],
+                rnb: ["Japanese R&B"],
+                rock: ["Japanese rock"],
+            };
+
+            const searchKeywords = discoveryQueries[genre] ?? [];
+
+            // 自動発見したアーティストを別に記録する
+            const discoveredArtistIds = new Set<string>();
+
+            // 検索キーワードから新しいアーティスト候補を発見する
+            for (const keyword of searchKeywords) {
+                const discoveryUrl = new URL(
+                    "https://api.spotify.com/v1/search"
+                );
+
+                discoveryUrl.searchParams.set("q", keyword);
+                discoveryUrl.searchParams.set("type", "artist");
+                discoveryUrl.searchParams.set("limit", "10");
+                discoveryUrl.searchParams.set("market", "JP");
+
+                const discoveryResponse = await fetch(discoveryUrl, {
+                    headers: {
+                        Authorization: `Bearer ${tokenData.access_token}`,
+                    },
+                    cache: "no-store",
+                });
+
+                if (!discoveryResponse.ok) {
+                    console.log("自動発見検索エラー:", keyword, discoveryResponse.status);
+
+                    // 利用制限に達したら、それ以上の検索を行わない
+                    if (discoveryResponse.status === 429) {
+                        const retryAfter = discoveryResponse.headers.get("Retry-After");
+                        const retrySeconds = Number(retryAfter);
+
+                        if (
+                            retryAfter !== null &&
+                            Number.isFinite(retrySeconds) &&
+                            retrySeconds >= 0
+                        ) {
+                            spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
+                            saveSpotifyRateLimit(spotifyRateLimitUntil);
+                        }
+
+                        return NextResponse.json(
+                            { message: "Spotify APIの利用制限に達しました。" },
+                            { status: 429 }
+                        );
+                    }
+
+                    continue;
+                }
+
+                const discoveryData = await discoveryResponse.json();
+
+                for (const artist of (discoveryData.artists?.items ?? []).slice(0, 5)) {
+                    if (!artist.id || !artist.name) {
+                        continue;
+                    }
+
+                    // Spotifyのジャンル情報を確認
+                    const artistGenres: string[] = artist.genres ?? [];
+
+                    const genreKeywords: Record<string, string[]> = {
+                        hiphop: ["hip hop", "hip-hop", "rap", "trap"],
+                        jpop: ["j-pop", "japanese pop"],
+                        rnb: ["r&b", "rnb", "soul"],
+                        rock: ["rock"],
+                    };
+
+                    const keywords = genreKeywords[genre] ?? [];
+
+                    const matchesGenre = artistGenres.some((artistGenre) =>
+                        keywords.some((keyword) =>
+                            artistGenre.toLowerCase().includes(keyword)
+                        )
+                    );
+
+                    if (!matchesGenre) {
+                        continue;
+                    }
+
+                    artists.push({
+                        id: artist.id,
+                        name: artist.name,
+                    });
+
+                    discoveredArtistIds.add(artist.id);
+                }
+            }
+
+            // 固定・お気に入り・自動発見の候補から重複を除外
             const uniqueArtists = Array.from(
                 new Map(artists.map((artist) => [artist.id, artist])).values()
             );
+
+            // 自動発見したアーティストを抽出
+            const discoveredArtists = uniqueArtists.filter(
+                (artist) => discoveredArtistIds.has(artist.id)
+            );
+
+            // 既存のアーティストを抽出
+            const existingArtists = uniqueArtists.filter(
+                (artist) => !discoveredArtistIds.has(artist.id)
+            );
+
+            // 新規5人＋既存5人を優先して取得
+            const prioritizedArtists = [
+                ...discoveredArtists.slice(0, 5),
+                ...existingArtists.slice(0, 5),
+            ];
 
             console.log("候補リストから取得したアーティスト:", artists);
 
@@ -598,7 +715,7 @@ export async function GET(request: Request) {
                 spotifyUrl: string;
             }[] = [];
 
-            for (const artist of uniqueArtists) {
+            for (const artist of prioritizedArtists) {
                 const artistName = artist.name;
 
                 let matchedArtist: {
