@@ -608,6 +608,7 @@ export async function GET(request: Request) {
                             retrySeconds >= 0
                         ) {
                             spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
+                            saveSpotifyRateLimit(spotifyRateLimitUntil);
                         }
 
                         console.log("Spotify API制限・待機時間（秒）:", retryAfter);
@@ -758,6 +759,16 @@ export async function GET(request: Request) {
             if (!searchResponse.ok) {
                 console.error("Spotify検索エラー詳細:", searchData);
 
+                if (searchResponse.status === 429) {
+                    const retryAfter = searchResponse.headers.get("Retry-After");
+                    const retrySeconds = Number(retryAfter);
+
+                    if (retryAfter !== null && Number.isFinite(retrySeconds) && retrySeconds >= 0) {
+                        spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
+                        saveSpotifyRateLimit(spotifyRateLimitUntil);
+                    }
+                }
+
                 return NextResponse.json(
                     {
                         message: "Spotifyの検索に失敗しました。",
@@ -828,6 +839,15 @@ export async function GET(request: Request) {
 
         if (!albumsResponse.ok) {
             const retryAfter = albumsResponse.headers.get("Retry-After");
+
+            if (albumsResponse.status === 429) {
+                const retrySeconds = Number(retryAfter);
+
+                if (retryAfter !== null && Number.isFinite(retrySeconds) && retrySeconds >= 0) {
+                    spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
+                    saveSpotifyRateLimit(spotifyRateLimitUntil);
+                }
+            }
 
             console.error("Spotify作品取得エラー:", {
                 artist: query,
