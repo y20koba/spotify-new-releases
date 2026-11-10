@@ -225,8 +225,8 @@ export default function Home() {
     loadFavoriteArtists();
   }, []);
 
-  async function searchAlbums(artistId?: string) {
-    const keyword = query.trim();
+  async function searchAlbums(artistId?: string, artistName?: string) {
+    const keyword = (artistName ?? query).trim();
 
     if (!keyword) {
       setError("アーティスト名を入力してください。");
@@ -583,6 +583,20 @@ export default function Home() {
                         <span className="text-sm text-[#1ed760]">
                           登録済み
                         </span>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setQuery(artist.name);
+                            setSelectedArtistId(artist.id);
+                            setActiveTab("search");
+                            setArtistCandidates([]);
+                            searchAlbums(artist.id, artist.name);
+                          }}
+                          className="rounded-lg bg-[#1ed760] px-3 py-2 text-sm font-semibold text-black transition hover:bg-[#1bd15a]"
+                        >
+                          作品を見る
+                        </button>
 
                         <button
                           type="button"
