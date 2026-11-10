@@ -692,16 +692,23 @@ export async function GET(request: Request) {
                 (artist) => discoveredArtistIds.has(artist.id)
             );
 
-            // 既存のアーティストを抽出
-            const existingArtists = uniqueArtists.filter(
-                (artist) => !discoveredArtistIds.has(artist.id)
-            );
+            // 日ごとに取得対象を切り替える
+            const todayIndex = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
+            const startIndex = (todayIndex * 5) % uniqueArtists.length;
 
-            // 新規5人＋既存5人を優先して取得
-            const prioritizedArtists = [
-                ...discoveredArtists.slice(0, 5),
-                ...existingArtists.slice(0, 5),
+            const rotatedArtists = [
+                ...uniqueArtists.slice(startIndex),
+                ...uniqueArtists.slice(0, startIndex),
             ];
+
+            const prioritizedArtists = [
+                ...discoveredArtists.slice(0, 2),
+                ...rotatedArtists
+                    .filter((artist) => !discoveredArtistIds.has(artist.id))
+                    .slice(0, 5 - Math.min(discoveredArtists.length, 2)),
+            ];
+
+            console.log("今回の作品取得対象:", prioritizedArtists.map((artist) => artist.name));
 
             console.log("候補リストから取得したアーティスト:", artists);
 
