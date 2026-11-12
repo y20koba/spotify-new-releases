@@ -46,6 +46,59 @@ db.exec(`
     genre TEXT NOT NULL,
     createdAt TEXT DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS release_notifications (
+    artistId TEXT NOT NULL,
+    albumId TEXT NOT NULL,
+    albumName TEXT NOT NULL,
+    releaseDate TEXT NOT NULL,
+    isRead INTEGER NOT NULL DEFAULT 0,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artistId, albumId)
+  );
+
+  CREATE TABLE IF NOT EXISTS checked_releases (
+    artistId TEXT NOT NULL,
+    albumId TEXT NOT NULL,
+    checkedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artistId, albumId)
+  );
+
+  CREATE TABLE IF NOT EXISTS notification_check_state (
+    artistId TEXT PRIMARY KEY,
+    lastCheckedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS notification_check_attempts (
+    artistId TEXT PRIMARY KEY,
+    lastAttemptAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS notification_check_progress (
+    artistId TEXT PRIMARY KEY,
+    nextOffset INTEGER NOT NULL DEFAULT 0,
+    startedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    firstPageIds TEXT,
+    verifiedOffset INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS notification_check_items (
+    artistId TEXT NOT NULL,
+    albumId TEXT NOT NULL,
+    albumName TEXT NOT NULL,
+    releaseDate TEXT NOT NULL,
+    fetchPosition INTEGER,
+    PRIMARY KEY (artistId, albumId)
+  );
+
+  CREATE TABLE IF NOT EXISTS notification_check_pages (
+    artistId TEXT NOT NULL,
+    requestOffset INTEGER NOT NULL,
+    nextOffset INTEGER NOT NULL,
+    itemCount INTEGER NOT NULL,
+    PRIMARY KEY (artistId, requestOffset)
+  );
 `);
 
 export default db;

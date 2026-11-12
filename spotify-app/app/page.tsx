@@ -26,6 +26,14 @@ type FavoriteArtist = {
   createdAt: string;
 };
 
+type ReleaseNotification = {
+  artistId: string;
+  albumId: string;
+  albumName: string;
+  releaseDate: string;
+  isRead: number;
+};
+
 const genres = [
   { id: "hiphop", name: "HIPHOP" },
   { id: "jpop", name: "J-POP" },
@@ -61,17 +69,44 @@ export default function Home() {
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState("all");
   const [selectedType, setSelectedType] = useState("all");
-  const [selectedReleaseDate, setSelectedReleaseDate] = useState(getLocalDateString);
-  const [todayDate] = useState(getLocalDateString);
+  const [selectedReleaseDate, setSelectedReleaseDate] = useState("");
+  const [todayDate, setTodayDate] = useState("");
+  useEffect(() => {
+    const today = getLocalDateString();
+
+    setSelectedReleaseDate(today);
+    setTodayDate(today);
+  }, []);
   const [hasMore, setHasMore] = useState(false);
   const [artistCandidates, setArtistCandidates] = useState<ArtistCandidate[]>([]);
   const [selectedArtistId, setSelectedArtistId] = useState<string | null>(null);
   const [favoriteArtists, setFavoriteArtists] = useState<FavoriteArtist[]>([]);
+  const [notificationCheckLoading, setNotificationCheckLoading] = useState(false);
   const [favoriteQuery, setFavoriteQuery] = useState("");
   const [favoriteCandidates, setFavoriteCandidates] = useState<ArtistCandidate[]>([]);
   const [favoriteSearchLoading, setFavoriteSearchLoading] = useState(false);
   const [favoriteSearchError, setFavoriteSearchError] = useState("");
   const [favoriteGenre, setFavoriteGenre] = useState("hiphop");
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifications, setNotifications] = useState<ReleaseNotification[]>([]);
+
+  useEffect(() => {
+    async function loadNotifications() {
+      try {
+        const response = await fetch("/api/notifications");
+        if (!response.ok) {
+          throw new Error("通知の取得に失敗しました。");
+        }
+        const data = await response.json();
+        setUnreadCount(data.unreadCount ?? 0);
+        setNotifications(data.notifications ?? []);
+      } catch (error) {
+        console.error("通知取得エラー:", error);
+      }
+    }
+
+    loadNotifications();
+  }, []);
 
   async function searchFavoriteArtists() {
     const keyword = favoriteQuery.trim();
@@ -224,6 +259,64 @@ export default function Home() {
 
     loadFavoriteArtists();
   }, []);
+
+  async function refreshNotifications() {
+    try {
+      const response = await fetch("/api/notifications");
+
+      if (!response.ok) {
+        throw new Error("通知の取得に失敗しました。");
+      }
+
+      const data = await response.json();
+
+      setNotifications(data.notifications);
+      setUnreadCount(data.unreadCount);
+    } catch (error) {
+      console.error("通知の更新エラー:", error);
+    }
+  }
+
+  async function checkArtistNotifications(artistId: string) {
+    const response = await fetch("/api/notifications/check", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ artistId }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      const retryAfter =
+        response.headers.get("Retry-After") ??
+        data.retryAfter;
+
+      const retrySeconds = Number(retryAfter);
+
+      if (
+        response.status === 429 &&
+        retryAfter != null &&
+        Number.isFinite(retrySeconds) &&
+        retrySeconds > 0
+      ) {
+        const retryMinutes = Math.ceil(retrySeconds / 60);
+
+        throw new Error(
+          `${data.message ?? "Spotify APIの利用制限中です。"}\n約${retryMinutes}分後に再試行してください。`
+        );
+      }
+
+      throw new Error(
+        data.message ?? "新着チェックに失敗しました。"
+      );
+    }
+
+    await refreshNotifications();
+
+    return data;
+  }
 
   async function searchAlbums(artistId?: string, artistName?: string) {
     const keyword = (artistName ?? query).trim();
@@ -408,7 +501,7 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[#121212] px-6 py-10 text-white">
       <div className="mx-auto max-w-7xl">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-start lg:gap-16">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between lg:gap-16">
           <div className="shrink-0">
             <p className="text-sm font-bold uppercase tracking-widest text-[#1ed760]">
               Spotify Music Discovery
@@ -417,6 +510,19 @@ export default function Home() {
             <h1 className="mt-3 text-4xl font-bold">
               Music Discovery
             </h1>
+          </div>
+
+          <div
+            className="relative flex h-12 w-12 items-center justify-center rounded-full bg-[#242424]"
+            aria-label={`未読通知 ${unreadCount}件`}
+            role="status"
+          >
+            <span className="text-2xl">🔔</span>
+            {unreadCount > 0 && (
+              <span className="absolute -right-1 -top-1 flex min-h-6 min-w-6 items-center justify-center rounded-full bg-[#1ed760] px-1 text-xs font-bold text-black">
+                {unreadCount}
+              </span>
+            )}
           </div>
         </div>
 
@@ -552,9 +658,41 @@ export default function Home() {
               </div>
             </section>
             <section className="rounded-xl bg-[#181818] p-6">
-              <h2 className="text-2xl font-bold">
-                ♡ お気に入りアーティスト
-              </h2>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-2xl font-bold">
+                  ♡ お気に入りアーティスト
+                </h2>
+                <button
+                  type="button"
+                  disabled={true}
+                  onClick={async () => {
+                    if (notificationCheckLoading || favoriteArtists.length === 0) return;
+
+                    setNotificationCheckLoading(true);
+
+                    try {
+                      const result = await checkArtistNotifications(favoriteArtists[0].id);
+
+                      alert(
+                        result.initialized
+                          ? "初回チェックが完了しました。"
+                          : `新着チェック完了！新しい作品：${result.newCount}件`
+                      );
+                    } catch (error) {
+                      alert(
+                        error instanceof Error
+                          ? error.message
+                          : "新着チェックに失敗しました。"
+                      );
+                    } finally {
+                      setNotificationCheckLoading(false);
+                    }
+                  }}
+                  className="rounded-lg bg-[#1ed760] px-4 py-2 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {notificationCheckLoading ? "チェック中..." : "🔔 新着をチェック"}
+                </button>
+              </div>
 
               <p className="mt-3 text-sm text-zinc-400">
                 好きなアーティストを登録して、新着作品をチェックしよう。
@@ -572,7 +710,18 @@ export default function Home() {
                       className="flex items-center justify-between rounded-lg bg-[#242424] p-4"
                     >
                       <div>
-                        <p className="font-semibold">{artist.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-semibold">{artist.name}</p>
+                          {notifications.some(
+                            (notification) =>
+                              notification.artistId === artist.id &&
+                              notification.isRead === 0
+                          ) && (
+                              <span className="rounded-full bg-[#1ed760] px-2 py-0.5 text-xs font-bold text-black">
+                                NEW
+                              </span>
+                            )}
+                        </div>
                         <p className="mt-1 text-xs text-zinc-400">
                           {genres.find((genre) => genre.id === artist.genre)?.name ??
                             artist.genre}
@@ -583,6 +732,37 @@ export default function Home() {
                         <span className="text-sm text-[#1ed760]">
                           登録済み
                         </span>
+
+                        <button
+                          type="button"
+                          disabled={notificationCheckLoading}
+                          onClick={async () => {
+                            if (notificationCheckLoading) return;
+
+                            setNotificationCheckLoading(true);
+
+                            try {
+                              const result = await checkArtistNotifications(artist.id);
+
+                              alert(
+                                result.initialized
+                                  ? `${artist.name}の初回チェックが完了しました。`
+                                  : `${artist.name}の新着チェック完了！新しい作品：${result.newCount}件`
+                              );
+                            } catch (error) {
+                              alert(
+                                error instanceof Error
+                                  ? error.message
+                                  : "新着チェックに失敗しました。"
+                              );
+                            } finally {
+                              setNotificationCheckLoading(false);
+                            }
+                          }}
+                          className="rounded-lg border border-[#1ed760] px-3 py-2 text-sm font-semibold text-[#1ed760] transition hover:bg-[#1ed760]/10 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {notificationCheckLoading ? "チェック中..." : "🔔 新着チェック"}
+                        </button>
 
                         <button
                           type="button"

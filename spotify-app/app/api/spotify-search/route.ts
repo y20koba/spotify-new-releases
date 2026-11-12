@@ -787,7 +787,7 @@ export async function GET(request: Request) {
 
                 albumsUrl.searchParams.set("include_groups", includeGroups);
                 albumsUrl.searchParams.set("limit", "10");
-                albumsUrl.searchParams.set("market", "JP");
+                albumsUrl.searchParams.set("offset", String(offset));
 
                 console.log("Spotify作品取得URL:", albumsUrl.toString());
 
@@ -1070,7 +1070,16 @@ export async function GET(request: Request) {
                     details: albumsData.error?.message ?? "詳細不明",
                     retryAfter,
                 },
-                { status: albumsResponse.status === 429 ? 429 : 502 }
+                {
+                    status: albumsResponse.status === 429 ? 429 : 502,
+                    ...(albumsResponse.status === 429 && retryAfter
+                        ? {
+                            headers: {
+                                "Retry-After": retryAfter,
+                            },
+                        }
+                        : {}),
+                }
             );
         }
 
@@ -1113,6 +1122,9 @@ export async function GET(request: Request) {
             artistCandidates,
             hasMore: Boolean(albumsData.next),
             fetchedCount: (albumsData.items ?? []).length,
+            nextOffset: albumsData.next
+                ? Number(new URL(albumsData.next).searchParams.get("offset"))
+                : null,
         });
     } catch {
         return NextResponse.json(
