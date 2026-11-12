@@ -11,6 +11,61 @@ function getRegisteredArtists(genre: string) {
     `).all(genre) as { id: string; name: string }[];
 }
 
+// 自動発見したアーティストをSQLiteに保存する
+function saveDiscoveredArtist(
+    genre: string,
+    artist: { id: string; name: string }
+) {
+    db.prepare(`
+        INSERT OR IGNORE INTO discovered_artists (
+            id,
+            name,
+            genre
+        )
+        VALUES (?, ?, ?)
+    `).run(artist.id, artist.name, genre);
+}
+
+// 保存済みの自動発見アーティストを取得する
+function getDiscoveredArtists(genre: string) {
+    return db.prepare(`
+        SELECT id, name
+        FROM discovered_artists
+        WHERE genre = ?
+        ORDER BY createdAt DESC
+    `).all(genre) as { id: string; name: string }[];
+}
+
+// 自動発見検索のキャッシュ有効期間（24時間）
+const DISCOVERY_CACHE_DURATION = 24 * 60 * 60 * 1000;
+
+// 自動発見検索が必要か判定する
+function shouldDiscoverArtists(genre: string) {
+    const cache = db.prepare(`
+        SELECT lastSearchedAt
+        FROM artist_discovery_cache
+        WHERE genre = ?
+    `).get(genre) as { lastSearchedAt: string } | undefined;
+
+    if (!cache) return true;
+
+    const lastSearched = new Date(cache.lastSearchedAt).getTime();
+
+    return !Number.isFinite(lastSearched) ||
+        Date.now() - lastSearched >= DISCOVERY_CACHE_DURATION;
+}
+
+// 自動発見検索の最終実行日時を保存する
+function saveDiscoveryCache(genre: string) {
+    db.prepare(`
+        INSERT OR REPLACE INTO artist_discovery_cache (
+            genre,
+            lastSearchedAt
+        )
+        VALUES (?, ?)
+    `).run(genre, new Date().toISOString());
+}
+
 db.exec(`
     CREATE TABLE IF NOT EXISTS spotify_rate_limit (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -498,6 +553,7 @@ export async function GET(request: Request) {
             const artists = [
                 ...(manualArtistsByGenre[genre] ?? []),
                 ...getRegisteredArtists(genre),
+                ...getDiscoveredArtists(genre),
             ];
 
             for (const artistName of artistSeeds) {
@@ -601,7 +657,10 @@ export async function GET(request: Request) {
             const discoveredArtistIds = new Set<string>();
 
             // 検索キーワードから新しいアーティスト候補を発見する
-            for (const keyword of searchKeywords) {
+            const needsDiscovery = shouldDiscoverArtists(genre);
+            let discoverySucceeded = true;
+
+            for (const keyword of needsDiscovery ? searchKeywords : []) {
                 const discoveryUrl = new URL(
                     "https://api.spotify.com/v1/search"
                 );
@@ -620,6 +679,8 @@ export async function GET(request: Request) {
 
                 if (!discoveryResponse.ok) {
                     console.log("自動発見検索エラー:", keyword, discoveryResponse.status);
+
+                    discoverySucceeded = false;
 
                     // 利用制限に達したら、それ以上の検索を行わない
                     if (discoveryResponse.status === 429) {
@@ -673,13 +734,23 @@ export async function GET(request: Request) {
                         continue;
                     }
 
-                    artists.push({
+                    const discoveredArtist = {
                         id: artist.id,
                         name: artist.name,
-                    });
+                    };
+
+                    artists.push(discoveredArtist);
 
                     discoveredArtistIds.add(artist.id);
+
+                    // 次回以降にIDを再利用できるよう保存
+                    saveDiscoveredArtist(genre, discoveredArtist);
                 }
+            }
+
+            // 全検索が成功した場合のみ検索日時を更新する
+            if (needsDiscovery && discoverySucceeded) {
+                saveDiscoveryCache(genre);
             }
 
             // 固定・お気に入り・自動発見の候補から重複を除外
@@ -692,20 +763,36 @@ export async function GET(request: Request) {
                 (artist) => discoveredArtistIds.has(artist.id)
             );
 
+            // 今回新しく発見したアーティストを最大2人優先
+            const newlyDiscoveredArtists = discoveredArtists.slice(0, 2);
+
+            // それ以外の候補をローテーション対象にする
+            // 保存済みの自動発見アーティストも含まれる
+            const rotationCandidates = uniqueArtists.filter(
+                (artist) =>
+                    !newlyDiscoveredArtists.some(
+                        (discovered) => discovered.id === artist.id
+                    )
+            );
+
             // 日ごとに取得対象を切り替える
             const todayIndex = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
-            const startIndex = (todayIndex * 5) % uniqueArtists.length;
+
+            const rotationCount = 5 - newlyDiscoveredArtists.length;
+
+            const startIndex = rotationCandidates.length > 0
+                ? (todayIndex * rotationCount) % rotationCandidates.length
+                : 0;
 
             const rotatedArtists = [
-                ...uniqueArtists.slice(startIndex),
-                ...uniqueArtists.slice(0, startIndex),
+                ...rotationCandidates.slice(startIndex),
+                ...rotationCandidates.slice(0, startIndex),
             ];
 
+            // 新規発見を優先しつつ、合計最大5人を取得
             const prioritizedArtists = [
-                ...discoveredArtists.slice(0, 2),
-                ...rotatedArtists
-                    .filter((artist) => !discoveredArtistIds.has(artist.id))
-                    .slice(0, 5 - Math.min(discoveredArtists.length, 2)),
+                ...newlyDiscoveredArtists,
+                ...rotatedArtists.slice(0, rotationCount),
             ];
 
             console.log("今回の作品取得対象:", prioritizedArtists.map((artist) => artist.name));

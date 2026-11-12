@@ -47,6 +47,18 @@ db.exec(`
     createdAt TEXT DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS discovered_artists (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    genre TEXT NOT NULL,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS artist_discovery_cache (
+    genre TEXT PRIMARY KEY,
+    lastSearchedAt TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS release_notifications (
     artistId TEXT NOT NULL,
     albumId TEXT NOT NULL,
