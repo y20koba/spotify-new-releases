@@ -1,7 +1,8 @@
-
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const Database = require("better-sqlite3");
+const { selectArtists } = require("../lib/artist-rotation.ts");
+const { isDiscoveryCacheExpired } = require("../lib/artist-discovery-cache.ts");
 
 // 本番DBを変更しないため、メモリ上のSQLiteを使用
 function createTestDb() {
@@ -25,12 +26,7 @@ function shouldDiscoverArtists(db, genre) {
         WHERE genre = ?
     `).get(genre);
 
-    if (!cache) return true;
-
-    const lastSearched = new Date(cache.lastSearchedAt).getTime();
-
-    return !Number.isFinite(lastSearched) ||
-        Date.now() - lastSearched >= 24 * 60 * 60 * 1000;
+    return isDiscoveryCacheExpired(cache?.lastSearchedAt);
 }
 
 test("キャッシュがなければ検索が必要", () => {
@@ -101,42 +97,6 @@ test("同じIDのアーティストは重複除外される", () => {
         ["artist-1", "artist-2", "artist-3"]
     );
 });
-
-// route.ts と同じローテーション処理
-function selectArtists(artists, discoveredArtistIds, todayIndex) {
-    const uniqueArtists = Array.from(
-        new Map(artists.map((artist) => [artist.id, artist])).values()
-    );
-
-    const discoveredArtists = uniqueArtists.filter(
-        (artist) => discoveredArtistIds.has(artist.id)
-    );
-
-    const newlyDiscoveredArtists = discoveredArtists.slice(0, 2);
-
-    const rotationCandidates = uniqueArtists.filter(
-        (artist) =>
-            !newlyDiscoveredArtists.some(
-                (discovered) => discovered.id === artist.id
-            )
-    );
-
-    const rotationCount = 5 - newlyDiscoveredArtists.length;
-
-    const startIndex = rotationCandidates.length > 0
-        ? (todayIndex * rotationCount) % rotationCandidates.length
-        : 0;
-
-    const rotatedArtists = [
-        ...rotationCandidates.slice(startIndex),
-        ...rotationCandidates.slice(0, startIndex),
-    ];
-
-    return [
-        ...newlyDiscoveredArtists,
-        ...rotatedArtists.slice(0, rotationCount),
-    ];
-}
 
 test("取得対象は最大5人で重複しない", () => {
     const artists = Array.from({ length: 12 }, (_, i) => ({

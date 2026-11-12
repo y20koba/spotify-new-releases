@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
+import { selectArtists } from "@/lib/artist-rotation";
+import { isDiscoveryCacheExpired } from "@/lib/artist-discovery-cache";
 
 // 登録済みアーティストをSQLiteから取得する
 function getRegisteredArtists(genre: string) {
@@ -36,23 +38,17 @@ function getDiscoveredArtists(genre: string) {
     `).all(genre) as { id: string; name: string }[];
 }
 
-// 自動発見検索のキャッシュ有効期間（24時間）
-const DISCOVERY_CACHE_DURATION = 24 * 60 * 60 * 1000;
-
 // 自動発見検索が必要か判定する
 function shouldDiscoverArtists(genre: string) {
+    // SQLiteから最終検索日時を取得
     const cache = db.prepare(`
         SELECT lastSearchedAt
         FROM artist_discovery_cache
         WHERE genre = ?
     `).get(genre) as { lastSearchedAt: string } | undefined;
 
-    if (!cache) return true;
-
-    const lastSearched = new Date(cache.lastSearchedAt).getTime();
-
-    return !Number.isFinite(lastSearched) ||
-        Date.now() - lastSearched >= DISCOVERY_CACHE_DURATION;
+    // 共通関数で24時間キャッシュの有効期限を判定
+    return isDiscoveryCacheExpired(cache?.lastSearchedAt);
 }
 
 // 自動発見検索の最終実行日時を保存する
@@ -758,42 +754,17 @@ export async function GET(request: Request) {
                 new Map(artists.map((artist) => [artist.id, artist])).values()
             );
 
-            // 自動発見したアーティストを抽出
-            const discoveredArtists = uniqueArtists.filter(
-                (artist) => discoveredArtistIds.has(artist.id)
-            );
-
-            // 今回新しく発見したアーティストを最大2人優先
-            const newlyDiscoveredArtists = discoveredArtists.slice(0, 2);
-
-            // それ以外の候補をローテーション対象にする
-            // 保存済みの自動発見アーティストも含まれる
-            const rotationCandidates = uniqueArtists.filter(
-                (artist) =>
-                    !newlyDiscoveredArtists.some(
-                        (discovered) => discovered.id === artist.id
-                    )
-            );
-
             // 日ごとに取得対象を切り替える
-            const todayIndex = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
+            const todayIndex = Math.floor(
+                Date.now() / (24 * 60 * 60 * 1000)
+            );
 
-            const rotationCount = 5 - newlyDiscoveredArtists.length;
-
-            const startIndex = rotationCandidates.length > 0
-                ? (todayIndex * rotationCount) % rotationCandidates.length
-                : 0;
-
-            const rotatedArtists = [
-                ...rotationCandidates.slice(startIndex),
-                ...rotationCandidates.slice(0, startIndex),
-            ];
-
-            // 新規発見を優先しつつ、合計最大5人を取得
-            const prioritizedArtists = [
-                ...newlyDiscoveredArtists,
-                ...rotatedArtists.slice(0, rotationCount),
-            ];
+            // 共通関数で取得対象のアーティストを選択
+            const prioritizedArtists = selectArtists(
+                uniqueArtists,
+                discoveredArtistIds,
+                todayIndex
+            );
 
             console.log("今回の作品取得対象:", prioritizedArtists.map((artist) => artist.name));
 
