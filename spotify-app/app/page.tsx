@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Image from "next/image";
 
 type SpotifyAlbum = {
@@ -53,6 +53,7 @@ function getLocalDateString() {
 export default function Home() {
   const [activeTab, setActiveTab] = useState("new-releases");
   const [selectedGenre, setSelectedGenre] = useState("hiphop");
+  const selectedGenreRef = useRef("hiphop");
   const [query, setQuery] = useState("");
   const [albums, setAlbums] = useState<SpotifyAlbum[]>([]);
   const [newReleases, setNewReleases] = useState<SpotifyAlbum[]>([]);
@@ -408,6 +409,37 @@ export default function Home() {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Spotify APIにはアクセスせず、SQLiteの保存済み作品を読み込む
+  async function loadCachedGenreReleases(genre: string) {
+    try {
+      const response = await fetch(
+        `/api/cached-releases?genre=${encodeURIComponent(genre)}`
+      );
+
+      if (!response.ok) {
+        throw new Error("保存済み作品の読み込みに失敗しました。");
+      }
+
+      const data = await response.json();
+      const cachedAlbums: SpotifyAlbum[] = data.albums ?? [];
+
+      setGenreCache((prev) => ({
+        ...prev,
+        [genre]: cachedAlbums,
+      }));
+
+      // 読み込み中に別のジャンルへ切り替わっていた場合は、
+      // そのジャンルの表示を上書きしないようにする
+      if (selectedGenreRef.current === genre) {
+        setNewReleases(cachedAlbums);
+        setHasFetchedNewReleases(cachedAlbums.length > 0);
+      }
+
+    } catch (error) {
+      console.error("SQLiteキャッシュ読み込みエラー:", error);
     }
   }
 
@@ -803,6 +835,7 @@ export default function Home() {
                 onClick={() => {
                   if (newReleasesLoading) return;
 
+                  selectedGenreRef.current = genre.id;
                   setSelectedGenre(genre.id);
                   setNewReleasesError("");
 
@@ -814,6 +847,8 @@ export default function Home() {
                   } else {
                     setNewReleases([]);
                     setHasFetchedNewReleases(false);
+
+                    void loadCachedGenreReleases(genre.id);
                   }
                 }}
                 className={`rounded-full px-4 py-2 text-sm font-semibold transition ${selectedGenre === genre.id
