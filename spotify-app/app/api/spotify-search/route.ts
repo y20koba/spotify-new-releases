@@ -719,7 +719,7 @@ export async function GET(request: Request) {
 
                 const discoveryData = await discoveryResponse.json();
 
-                for (const artist of (discoveryData.artists?.items ?? []).slice(0, 5)) {
+                for (const artist of (discoveryData.artists?.items ?? [])) {
                     if (!artist.id || !artist.name) {
                         continue;
                     }
