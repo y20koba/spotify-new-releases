@@ -28,6 +28,15 @@ type RegistrationSource = {
   source: string;
 };
 
+export function getRejectedArtistIds(db: Database.Database, genre: string): Set<string> {
+  const artists = db.prepare(`
+    SELECT id FROM unclassified_artists
+    WHERE sourceGenre = ? AND status = 'rejected'
+  `).all(genre) as { id: string }[];
+
+  return new Set(artists.map((artist) => artist.id));
+}
+
 export function reviewUnclassifiedArtist(
   db: Database.Database,
   id: string,
@@ -141,6 +150,15 @@ export function reviewUnclassifiedArtist(
           WHERE genre = ?
         `).run(`${sourceGenre}_v4`);
       }
+    }
+
+    // 自動発掘の対象が変わる場合は作品キャッシュだけを無効化する。
+    // 発掘検索の24時間キャッシュと保存済みIDは維持する。
+    if (artist.status !== status &&
+        (artist.status === "rejected" || status === "rejected")) {
+      db.prepare(`
+        DELETE FROM genre_cache WHERE genre = ?
+      `).run(`${sourceGenre}_v4`);
     }
 
     db.prepare(`
