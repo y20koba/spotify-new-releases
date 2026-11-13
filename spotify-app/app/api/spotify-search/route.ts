@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { selectArtists } from "@/lib/artist-rotation";
 import { isDiscoveryCacheExpired } from "@/lib/artist-discovery-cache";
+import { calculateRetryUntil } from "@/lib/spotify-rate-limit";
 
 // 登録済みアーティストをSQLiteから取得する
 function getRegisteredArtists(genre: string) {
@@ -590,16 +591,13 @@ export async function GET(request: Request) {
 
                     if (artistResponse.status === 429) {
                         const retryAfter = artistResponse.headers.get("Retry-After");
-                        const retrySeconds = Number(retryAfter);
 
-                        if (
-                            retryAfter !== null &&
-                            Number.isFinite(retrySeconds) &&
-                            retrySeconds >= 0
-                        ) {
-                            spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
-                            saveSpotifyRateLimit(spotifyRateLimitUntil);
-                        }
+                        spotifyRateLimitUntil = Math.max(
+                            spotifyRateLimitUntil,
+                            calculateRetryUntil(retryAfter)
+                        );
+
+                        saveSpotifyRateLimit(spotifyRateLimitUntil);
 
                         console.log("Spotify API制限・待機時間（秒）:", retryAfter);
 
@@ -681,16 +679,13 @@ export async function GET(request: Request) {
                     // 利用制限に達したら、それ以上の検索を行わない
                     if (discoveryResponse.status === 429) {
                         const retryAfter = discoveryResponse.headers.get("Retry-After");
-                        const retrySeconds = Number(retryAfter);
 
-                        if (
-                            retryAfter !== null &&
-                            Number.isFinite(retrySeconds) &&
-                            retrySeconds >= 0
-                        ) {
-                            spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
-                            saveSpotifyRateLimit(spotifyRateLimitUntil);
-                        }
+                        spotifyRateLimitUntil = Math.max(
+                            spotifyRateLimitUntil,
+                            calculateRetryUntil(retryAfter)
+                        );
+
+                        saveSpotifyRateLimit(spotifyRateLimitUntil);
 
                         return NextResponse.json(
                             { message: "Spotify APIの利用制限に達しました。" },
@@ -863,17 +858,14 @@ export async function GET(request: Request) {
 
                     if (albumsResponse.status === 429) {
                         const retryAfter = albumsResponse.headers.get("Retry-After");
-                        const retrySeconds = Number(retryAfter);
 
-                        // Spotifyが指定した待機時間を記録する
-                        if (
-                            retryAfter !== null &&
-                            Number.isFinite(retrySeconds) &&
-                            retrySeconds >= 0
-                        ) {
-                            spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
-                            saveSpotifyRateLimit(spotifyRateLimitUntil);
-                        }
+                        // Spotify APIの待機終了時刻を計算して保存する
+                        spotifyRateLimitUntil = Math.max(
+                            spotifyRateLimitUntil,
+                            calculateRetryUntil(retryAfter)
+                        );
+
+                        saveSpotifyRateLimit(spotifyRateLimitUntil);
 
                         console.log("Spotify API制限・待機時間（秒）:", retryAfter);
 
@@ -1025,12 +1017,13 @@ export async function GET(request: Request) {
 
                 if (searchResponse.status === 429) {
                     const retryAfter = searchResponse.headers.get("Retry-After");
-                    const retrySeconds = Number(retryAfter);
 
-                    if (retryAfter !== null && Number.isFinite(retrySeconds) && retrySeconds >= 0) {
-                        spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
-                        saveSpotifyRateLimit(spotifyRateLimitUntil);
-                    }
+                    spotifyRateLimitUntil = Math.max(
+                        spotifyRateLimitUntil,
+                        calculateRetryUntil(retryAfter)
+                    );
+
+                    saveSpotifyRateLimit(spotifyRateLimitUntil);
                 }
 
                 return NextResponse.json(
@@ -1105,12 +1098,12 @@ export async function GET(request: Request) {
             const retryAfter = albumsResponse.headers.get("Retry-After");
 
             if (albumsResponse.status === 429) {
-                const retrySeconds = Number(retryAfter);
+                spotifyRateLimitUntil = Math.max(
+                    spotifyRateLimitUntil,
+                    calculateRetryUntil(retryAfter)
+                );
 
-                if (retryAfter !== null && Number.isFinite(retrySeconds) && retrySeconds >= 0) {
-                    spotifyRateLimitUntil = Date.now() + retrySeconds * 1000;
-                    saveSpotifyRateLimit(spotifyRateLimitUntil);
-                }
+                saveSpotifyRateLimit(spotifyRateLimitUntil);
             }
 
             console.error("Spotify作品取得エラー:", {
