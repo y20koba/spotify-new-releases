@@ -50,6 +50,13 @@ const genres = [
   { id: "rock", name: "ロック" },
 ];
 
+const unclassifiedStatusFilters = [
+  { value: "all", label: "すべて" },
+  { value: "pending", label: "未判定" },
+  { value: "approved", label: "承認済み" },
+  { value: "rejected", label: "除外済み" },
+] as const;
+
 function getLocalDateString() {
   const today = new Date();
   const localDate = new Date(
@@ -64,6 +71,9 @@ export default function Home() {
   const [unclassifiedArtists, setUnclassifiedArtists] = useState<
     UnclassifiedArtist[]
   >([]);
+  const [unclassifiedStatusFilter, setUnclassifiedStatusFilter] = useState<
+    (typeof unclassifiedStatusFilters)[number]["value"]
+  >("pending");
   const [unclassifiedLoading, setUnclassifiedLoading] = useState(false);
   const [unclassifiedError, setUnclassifiedError] = useState("");
   const [selectedGenre, setSelectedGenre] = useState("hiphop");
@@ -584,6 +594,18 @@ export default function Home() {
     }
   }
 
+  const unclassifiedStatusCounts = {
+    all: unclassifiedArtists.length,
+    pending: unclassifiedArtists.filter((artist) => artist.status === "pending").length,
+    approved: unclassifiedArtists.filter((artist) => artist.status === "approved").length,
+    rejected: unclassifiedArtists.filter((artist) => artist.status === "rejected").length,
+  };
+  const filteredUnclassifiedArtists = unclassifiedArtists.filter(
+    (artist) =>
+      unclassifiedStatusFilter === "all" ||
+      artist.status === unclassifiedStatusFilter
+  );
+
   const filteredNewReleases = newReleases.filter((album) => {
     if (
       selectedReleaseDate &&
@@ -725,6 +747,23 @@ export default function Home() {
               {unclassifiedLoading ? "読み込み中..." : "一覧を更新"}
             </button>
 
+            <div className="flex flex-wrap gap-2" role="group" aria-label="新人候補の状態フィルター">
+              {unclassifiedStatusFilters.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  onClick={() => setUnclassifiedStatusFilter(filter.value)}
+                  aria-pressed={unclassifiedStatusFilter === filter.value}
+                  className={`rounded-full px-5 py-2 font-semibold transition ${unclassifiedStatusFilter === filter.value
+                    ? "bg-[#1ed760] text-black"
+                    : "bg-[#242424] text-white hover:bg-[#333333]"
+                    }`}
+                >
+                  {filter.label}（{unclassifiedStatusCounts[filter.value]}件）
+                </button>
+              ))}
+            </div>
+
             {unclassifiedError && (
               <p className="rounded-lg bg-red-950 p-4 text-red-300">
                 {unclassifiedError}
@@ -744,10 +783,16 @@ export default function Home() {
               unclassifiedArtists.length > 0 && (
                 <div className="space-y-3">
                   <p className="text-sm text-zinc-400">
-                    候補数：{unclassifiedArtists.length}件
+                    候補数：{filteredUnclassifiedArtists.length}件
                   </p>
 
-                  {unclassifiedArtists.map((artist) => (
+                  {filteredUnclassifiedArtists.length === 0 && (
+                    <p className="rounded-xl bg-[#181818] p-6 text-zinc-400">
+                      選択した状態の新人候補はいません。
+                    </p>
+                  )}
+
+                  {filteredUnclassifiedArtists.map((artist) => (
                     <div
                       key={`${artist.id}-${artist.sourceGenre}`}
                       className="rounded-xl bg-[#181818] p-5"
