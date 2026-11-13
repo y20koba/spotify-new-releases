@@ -127,6 +127,12 @@ db.exec(`
     PRIMARY KEY (id, sourceGenre)
   );
 
+  CREATE TABLE IF NOT EXISTS artist_registration_sources (
+    artistId TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+
 `);
 
 export default db;

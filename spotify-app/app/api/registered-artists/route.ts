@@ -41,10 +41,24 @@ export async function POST(request: Request) {
         }
 
         // SQLiteに登録
-        db.prepare(`
-            INSERT OR IGNORE INTO registered_artists (id, name, genre)
-            VALUES (?, ?, ?)
-        `).run(id.trim(), name.trim(), genre);
+        const registerArtist = db.transaction(() => {
+            const artistId = id.trim();
+
+            db.prepare(`
+                INSERT OR IGNORE INTO registered_artists (id, name, genre)
+                VALUES (?, ?, ?)
+            `).run(artistId, name.trim(), genre);
+
+            // 手動登録したアーティストは保護対象にする
+            db.prepare(`
+                INSERT INTO artist_registration_sources (artistId, source)
+                VALUES (?, 'manual')
+                ON CONFLICT(artistId)
+                DO UPDATE SET source = 'manual'
+            `).run(artistId);
+        });
+
+        registerArtist();
 
         // お気に入りを追加したジャンルのキャッシュを無効にする
         db.prepare(`
