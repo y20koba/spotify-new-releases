@@ -3,6 +3,7 @@ import db from "@/lib/db";
 import { selectArtists } from "@/lib/artist-rotation";
 import { isDiscoveryCacheExpired } from "@/lib/artist-discovery-cache";
 import { calculateRetryUntil } from "@/lib/spotify-rate-limit";
+import { getRejectedArtistIds } from "@/lib/unclassified-artist-review";
 
 // 登録済みアーティストをSQLiteから取得する
 function getRegisteredArtists(genre: string) {
@@ -565,17 +566,23 @@ export async function GET(request: Request) {
                 ],
             };
 
-            // コード内の固定アーティストとSQLiteの登録アーティストを統合
+            const rejectedArtistIds = getRejectedArtistIds(db, genre);
+            const savedDiscoveredArtists = getDiscoveredArtists(genre);
+            const eligibleDiscoveredArtists = savedDiscoveredArtists.filter(
+                (artist) => !rejectedArtistIds.has(artist.id)
+            );
+
+            // 除外判定は自動発見だけに適用し、固定・お気に入りは維持する
             const artists = [
                 ...(manualArtistsByGenre[genre] ?? []),
                 ...getRegisteredArtists(genre),
-                ...getDiscoveredArtists(genre),
+                ...eligibleDiscoveredArtists,
             ];
 
             for (const artistName of artistSeeds) {
                 // IDが登録済みならSpotify検索を省略
                 if (
-                    artists.some(
+                    [...artists, ...savedDiscoveredArtists].some(
                         (artist) =>
                             artist.name.toLowerCase() === artistName.toLowerCase()
                     )
@@ -668,7 +675,7 @@ export async function GET(request: Request) {
 
             // 保存済みの自動発見アーティストも優先候補に含める
             const discoveredArtistIds = new Set<string>(
-                getDiscoveredArtists(genre).map((artist) => artist.id)
+                eligibleDiscoveredArtists.map((artist) => artist.id)
             );
 
             // 検索キーワードから新しいアーティスト候補を発見する
@@ -721,6 +728,10 @@ export async function GET(request: Request) {
 
                 for (const artist of (discoveryData.artists?.items ?? [])) {
                     if (!artist.id || !artist.name) {
+                        continue;
+                    }
+
+                    if (rejectedArtistIds.has(artist.id)) {
                         continue;
                     }
 
