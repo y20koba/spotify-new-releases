@@ -29,6 +29,25 @@ function saveDiscoveredArtist(
     `).run(artist.id, artist.name, genre);
 }
 
+function saveUnclassifiedArtist(
+    genre: string,
+    keyword: string,
+    artist: { id: string; name: string }
+) {
+    db.prepare(`
+        INSERT INTO unclassified_artists (
+            id, name, sourceGenre, discoveryQuery
+        )
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id, sourceGenre) DO NOTHING
+    `).run(
+        artist.id,
+        artist.name,
+        genre,
+        keyword
+    );
+}
+
 // 保存済みの自動発見アーティストを取得する
 function getDiscoveredArtists(genre: string) {
     return db.prepare(`
@@ -647,8 +666,10 @@ export async function GET(request: Request) {
 
             const searchKeywords = discoveryQueries[genre] ?? [];
 
-            // 自動発見したアーティストを別に記録する
-            const discoveredArtistIds = new Set<string>();
+            // 保存済みの自動発見アーティストも優先候補に含める
+            const discoveredArtistIds = new Set<string>(
+                getDiscoveredArtists(genre).map((artist) => artist.id)
+            );
 
             // 検索キーワードから新しいアーティスト候補を発見する
             const needsDiscovery = shouldDiscoverArtists(genre);
@@ -722,6 +743,14 @@ export async function GET(request: Request) {
                     );
 
                     if (!matchesGenre) {
+                        // ジャンル情報が空の候補は、除外せず別テーブルに保存する
+                        if (artistGenres.length === 0) {
+                            saveUnclassifiedArtist(genre, keyword, {
+                                id: artist.id,
+                                name: artist.name,
+                            });
+                        }
+
                         continue;
                     }
 

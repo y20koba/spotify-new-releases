@@ -17,20 +17,35 @@ export function selectArtists(
         (artist) => discoveredArtistIds.has(artist.id)
     );
 
-    const newlyDiscoveredArtists = discoveredArtists.slice(0, 2);
+    // 日ごとに自動発見アーティストをローテーション
+    const discoveredStartIndex =
+        discoveredArtists.length > 0
+            ? (todayIndex * 2) % discoveredArtists.length
+            : 0;
 
+    const rotatedDiscoveredArtists = [
+        ...discoveredArtists.slice(discoveredStartIndex),
+        ...discoveredArtists.slice(0, discoveredStartIndex),
+    ];
+
+    // 最大2人を発見枠として優先する
+    const prioritizedDiscoveredArtists =
+        rotatedDiscoveredArtists.slice(0, 2);
+
+    // 優先枠で選ばれたアーティストは通常枠から除外
     const rotationCandidates = uniqueArtists.filter(
         (artist) =>
-            !newlyDiscoveredArtists.some(
+            !prioritizedDiscoveredArtists.some(
                 (discovered) => discovered.id === artist.id
             )
     );
 
-    const rotationCount = 5 - newlyDiscoveredArtists.length;
+    const rotationCount = 5 - prioritizedDiscoveredArtists.length;
 
-    const startIndex = rotationCandidates.length > 0
-        ? (todayIndex * rotationCount) % rotationCandidates.length
-        : 0;
+    const startIndex =
+        rotationCandidates.length > 0
+            ? (todayIndex * rotationCount) % rotationCandidates.length
+            : 0;
 
     const rotatedArtists = [
         ...rotationCandidates.slice(startIndex),
@@ -38,7 +53,7 @@ export function selectArtists(
     ];
 
     return [
-        ...newlyDiscoveredArtists,
+        ...prioritizedDiscoveredArtists,
         ...rotatedArtists.slice(0, rotationCount),
     ];
 }

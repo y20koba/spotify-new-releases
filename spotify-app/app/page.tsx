@@ -13,6 +13,15 @@ type SpotifyAlbum = {
   spotifyUrl: string;
 };
 
+type UnclassifiedArtist = {
+  id: string;
+  name: string;
+  sourceGenre: string;
+  discoveryQuery: string;
+  status: string;
+  createdAt: string;
+};
+
 type ArtistCandidate = {
   id: string;
   name: string;
@@ -52,6 +61,11 @@ function getLocalDateString() {
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("new-releases");
+  const [unclassifiedArtists, setUnclassifiedArtists] = useState<
+    UnclassifiedArtist[]
+  >([]);
+  const [unclassifiedLoading, setUnclassifiedLoading] = useState(false);
+  const [unclassifiedError, setUnclassifiedError] = useState("");
   const [selectedGenre, setSelectedGenre] = useState("hiphop");
   const selectedGenreRef = useRef("hiphop");
   const [query, setQuery] = useState("");
@@ -108,6 +122,88 @@ export default function Home() {
 
     loadNotifications();
   }, []);
+
+  async function updateUnclassifiedArtist(
+    artist: UnclassifiedArtist,
+    status: "approved" | "pending" | "rejected"
+  ) {
+    try {
+      const response = await fetch("/api/unclassified-artists", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          id: artist.id,
+          sourceGenre: artist.sourceGenre,
+          status,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message ?? "更新に失敗しました。");
+      }
+
+      setUnclassifiedArtists((current) =>
+        current.map((item) =>
+          item.id === artist.id &&
+            item.sourceGenre === artist.sourceGenre
+            ? { ...item, status }
+            : item
+        )
+      );
+
+      // 登録済みアーティスト一覧も更新
+      const registeredResponse = await fetch("/api/registered-artists");
+
+      if (registeredResponse.ok) {
+        const registeredData = await registeredResponse.json();
+        setFavoriteArtists(registeredData.artists ?? []);
+      }
+
+      // 次回の作品取得時に新しい候補が反映されるようにする
+      setGenreCache((current) => {
+        const updated = { ...current };
+        delete updated[artist.sourceGenre];
+        return updated;
+      });
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : "更新に失敗しました。"
+      );
+    }
+  }
+
+  async function loadUnclassifiedArtists() {
+    setUnclassifiedLoading(true);
+    setUnclassifiedError("");
+
+    try {
+      const response = await fetch("/api/unclassified-artists", {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error("新人候補の取得に失敗しました。");
+      }
+
+      const data = await response.json();
+
+      setUnclassifiedArtists(data.artists ?? []);
+    } catch (error) {
+      setUnclassifiedError(
+        error instanceof Error
+          ? error.message
+          : "新人候補の読み込みに失敗しました。"
+      );
+    } finally {
+      setUnclassifiedLoading(false);
+    }
+  }
 
   async function searchFavoriteArtists() {
     const keyword = favoriteQuery.trim();
@@ -572,6 +668,20 @@ export default function Home() {
 
           <button
             type="button"
+            onClick={() => {
+              setActiveTab("unclassified");
+              void loadUnclassifiedArtists();
+            }}
+            className={`rounded-lg px-5 py-3 font-semibold transition ${activeTab === "unclassified"
+              ? "bg-[#1ed760] text-black"
+              : "bg-[#242424] text-white hover:bg-[#333333]"
+              }`}
+          >
+            🔎 新人候補
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("search")}
             className={`rounded-lg px-5 py-3 font-semibold transition ${activeTab === "search"
               ? "bg-[#1ed760] text-black"
@@ -592,6 +702,124 @@ export default function Home() {
             ♡ お気に入り
           </button>
         </div>
+
+
+        {activeTab === "unclassified" && (
+          <section className="mt-8 space-y-5">
+            <div>
+              <h2 className="text-2xl font-bold">
+                ジャンル未判定の新人候補
+              </h2>
+              <p className="mt-2 text-sm text-zinc-400">
+                Spotifyのジャンル情報がないアーティストです。
+                発見元ジャンルは参考情報であり、確定した分類ではありません。
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void loadUnclassifiedArtists()}
+              disabled={unclassifiedLoading}
+              className="rounded-lg bg-[#242424] px-4 py-2 font-semibold hover:bg-[#333333] disabled:opacity-50"
+            >
+              {unclassifiedLoading ? "読み込み中..." : "一覧を更新"}
+            </button>
+
+            {unclassifiedError && (
+              <p className="rounded-lg bg-red-950 p-4 text-red-300">
+                {unclassifiedError}
+              </p>
+            )}
+
+            {!unclassifiedLoading &&
+              !unclassifiedError &&
+              unclassifiedArtists.length === 0 && (
+                <p className="rounded-xl bg-[#181818] p-6 text-zinc-400">
+                  まだ新人候補は保存されていません。
+                  次回の自動発見検索で候補が見つかると表示されます。
+                </p>
+              )}
+
+            {!unclassifiedLoading &&
+              unclassifiedArtists.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-sm text-zinc-400">
+                    候補数：{unclassifiedArtists.length}件
+                  </p>
+
+                  {unclassifiedArtists.map((artist) => (
+                    <div
+                      key={`${artist.id}-${artist.sourceGenre}`}
+                      className="rounded-xl bg-[#181818] p-5"
+                    >
+                      <h3 className="text-lg font-bold">
+                        {artist.name}
+                      </h3>
+
+                      <p className="mt-2 text-sm text-zinc-400">
+                        発見元：
+                        {genres.find(
+                          (genre) => genre.id === artist.sourceGenre
+                        )?.name ?? artist.sourceGenre}
+                      </p>
+
+                      <p className="mt-1 text-sm text-zinc-400">
+                        検索キーワード：{artist.discoveryQuery}
+                      </p>
+
+                      <p className="mt-1 text-sm text-zinc-400">
+                        判定状態：{artist.status}
+                      </p>
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void updateUnclassifiedArtist(artist, "approved")
+                          }
+                          disabled={artist.status === "approved"}
+                          className="rounded-lg bg-[#1ed760] px-4 py-2 text-sm font-semibold text-black disabled:opacity-40"
+                        >
+                          承認
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void updateUnclassifiedArtist(artist, "pending")
+                          }
+                          disabled={artist.status === "pending"}
+                          className="rounded-lg bg-[#333333] px-4 py-2 text-sm font-semibold disabled:opacity-40"
+                        >
+                          保留
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void updateUnclassifiedArtist(artist, "rejected")
+                          }
+                          disabled={artist.status === "rejected"}
+                          className="rounded-lg border border-red-500/40 px-4 py-2 text-sm font-semibold text-red-400 disabled:opacity-40"
+                        >
+                          除外
+                        </button>
+                      </div>
+
+                      <a
+                        href={`https://open.spotify.com/artist/${encodeURIComponent(artist.id)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 inline-block text-sm font-semibold text-[#1ed760] hover:underline"
+                      >
+                        Spotifyで確認
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              )}
+          </section>
+        )}
 
         {activeTab === "artist-management" && (
           <div className="mt-8 space-y-6">

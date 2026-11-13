@@ -124,9 +124,11 @@ test("新しく発見したアーティストを最大2人優先する", () => {
 
     const result = selectArtists(artists, discoveredIds, 100);
 
-    assert.deepEqual(
-        result.slice(0, 2).map((artist) => artist.id),
-        ["artist-7", "artist-8"]
+    assert.equal(
+        result.slice(0, 2).every(
+            (artist) => discoveredIds.has(artist.id)
+        ),
+        true
     );
 
     assert.equal(result.length, 5);
@@ -156,4 +158,70 @@ test("候補が5人未満でも正常に取得できる", () => {
     const result = selectArtists(artists, new Set(), 100);
 
     assert.equal(result.length, 2);
+});
+
+
+test("保存済みの発見候補を日ごとにローテーションする", () => {
+    const artists = Array.from({ length: 10 }, (_, i) => ({
+        id: `artist-${i}`,
+        name: `Artist ${i}`,
+    }));
+
+    const discoveredIds = new Set([
+        "artist-5",
+        "artist-6",
+        "artist-7",
+        "artist-8",
+    ]);
+
+    const day1 = selectArtists(artists, discoveredIds, 100);
+    const day2 = selectArtists(artists, discoveredIds, 101);
+
+    assert.deepEqual(
+        day1.slice(0, 2).map((artist) => artist.id),
+        ["artist-5", "artist-6"]
+    );
+
+    assert.deepEqual(
+        day2.slice(0, 2).map((artist) => artist.id),
+        ["artist-7", "artist-8"]
+    );
+
+    assert.equal(day1.length, 5);
+    assert.equal(day2.length, 5);
+});
+
+test("発見候補が1人の場合も重複しない", () => {
+    const artists = Array.from({ length: 8 }, (_, i) => ({
+        id: `artist-${i}`,
+        name: `Artist ${i}`,
+    }));
+
+    const result = selectArtists(
+        artists,
+        new Set(["artist-7"]),
+        100
+    );
+
+    assert.equal(result[0].id, "artist-7");
+    assert.equal(result.length, 5);
+    assert.equal(
+        new Set(result.map((artist) => artist.id)).size,
+        5
+    );
+});
+
+test("発見候補がいない場合も最大5人を選択する", () => {
+    const artists = Array.from({ length: 12 }, (_, i) => ({
+        id: `artist-${i}`,
+        name: `Artist ${i}`,
+    }));
+
+    const result = selectArtists(
+        artists,
+        new Set(),
+        100
+    );
+
+    assert.equal(result.length, 5);
 });

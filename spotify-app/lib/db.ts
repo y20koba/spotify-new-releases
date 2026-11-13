@@ -111,6 +111,22 @@ db.exec(`
     itemCount INTEGER NOT NULL,
     PRIMARY KEY (artistId, requestOffset)
   );
+
+  CREATE TABLE IF NOT EXISTS artist_discovery_cache (
+    genre TEXT PRIMARY KEY,
+    lastSearchedAt TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS unclassified_artists (
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sourceGenre TEXT NOT NULL,
+    discoveryQuery TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id, sourceGenre)
+  );
+
 `);
 
 export default db;
