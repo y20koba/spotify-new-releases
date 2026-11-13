@@ -99,10 +99,24 @@ export async function DELETE(request: Request) {
             );
         }
 
-        const result = db.prepare(`
-      DELETE FROM registered_artists
-      WHERE id = ?
-    `).run(id.trim());
+        const deleteArtist = db.transaction(() => {
+            const result = db.prepare(`
+                DELETE FROM registered_artists
+                WHERE id = ?
+            `).run(id.trim());
+
+            if (result.changes > 0) {
+                db.prepare(`
+                    DELETE FROM artist_registration_sources
+                    WHERE artistId = ?
+                `).run(id.trim());
+            }
+
+            return result;
+        });
+
+        const result = deleteArtist();
+
 
         if (result.changes === 0) {
             return NextResponse.json(
