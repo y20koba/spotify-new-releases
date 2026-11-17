@@ -16,9 +16,9 @@ const compiled = ts.transpileModule(source, {
     target: ts.ScriptTarget.ES2020,
   },
 }).outputText;
-const exports = {};
-vm.runInNewContext(compiled, { exports });
-const { summarizeObservedReleases } = exports;
+const moduleExports = {};
+vm.runInNewContext(compiled, { exports: moduleExports });
+const { summarizeObservedReleases } = moduleExports;
 
 test("取得した作品の最古の日付と件数を集計する", () => {
   assert.deepEqual(
