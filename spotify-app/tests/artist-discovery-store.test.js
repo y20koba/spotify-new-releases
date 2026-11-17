@@ -6,6 +6,26 @@ const vm = require("node:vm");
 const ts = require("typescript");
 const Database = require("better-sqlite3");
 
+const observationSource = fs.readFileSync(
+  path.join(__dirname, "../lib/artist-discovery-observation.ts"),
+  "utf8"
+);
+
+const observationCompiled = ts.transpileModule(observationSource, {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2020,
+  },
+}).outputText;
+
+const observationExports = {};
+
+vm.runInNewContext(observationCompiled, {
+  exports: observationExports,
+});
+
+const { summarizeObservedReleases } = observationExports;
+
 // 本番のspotify.dbは開かず、メモリ内SQLiteだけで検証する。
 const source = fs.readFileSync(
   path.join(__dirname, "../lib/artist-discovery-store.ts"), "utf8"
@@ -104,6 +124,38 @@ test("未保存の場合はundefined、既存の登録情報は変更しない",
         .get("artist-1"),
       { name: "Original Name", genre: "hiphop" }
     );
+  } finally {
+    db.close();
+  }
+});
+
+test("取得作品を集計してSQLiteへ保存・読み込みできる", () => {
+  const db = setup();
+
+  try {
+    const releases = [
+      { id: "release-1", releaseDate: "2026-10-01" },
+      { id: "release-2", releaseDate: "2026-10-15" },
+      { id: "release-1", releaseDate: "2026-10-01" },
+    ];
+
+    const observation = summarizeObservedReleases(releases);
+
+    saveArtistObservation(
+      db,
+      "artist-1",
+      "hiphop",
+      observation
+    );
+
+    const stored = getArtistObservation(
+      db,
+      "artist-1",
+      "hiphop"
+    );
+
+    assert.equal(stored.oldestObservedReleaseDate, "2026-10-01");
+    assert.equal(stored.observedReleaseCount, 2);
   } finally {
     db.close();
   }

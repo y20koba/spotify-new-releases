@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { selectArtists } from "@/lib/artist-rotation";
+import { summarizeObservedReleases } from "@/lib/artist-discovery-observation";
+import { saveArtistObservation } from "@/lib/artist-discovery-store";
 import { isDiscoveryCacheExpired } from "@/lib/artist-discovery-cache";
 import { calculateRetryUntil } from "@/lib/spotify-rate-limit";
 import { getRejectedArtistIds } from "@/lib/unclassified-artist-review";
@@ -950,6 +952,17 @@ export async function GET(request: Request) {
                         spotifyUrl: album.external_urls.spotify,
                     })
                 );
+                // 今回取得できたアーティストの作品を集計する
+                const observation = summarizeObservedReleases(albums);
+
+                // 観測結果をアーティストID・ジャンルごとに保存する
+                saveArtistObservation(
+                    db,
+                    matchedArtist.id,
+                    genre,
+                    observation
+                );
+
                 allAlbums.push(...albums);
             }
 
