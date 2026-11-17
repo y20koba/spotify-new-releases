@@ -127,6 +127,16 @@ db.exec(`
     PRIMARY KEY (id, sourceGenre)
   );
 
+  -- 取得済み作品から観測できた情報のみ保存する（デビュー日ではない）
+  CREATE TABLE IF NOT EXISTS artist_discovery_scores (
+    artistId TEXT NOT NULL,
+    genre TEXT NOT NULL,
+    oldestObservedReleaseDate TEXT,
+    observedReleaseCount INTEGER NOT NULL DEFAULT 0 CHECK (observedReleaseCount >= 0),
+    evaluatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artistId, genre)
+  );
+
   CREATE TABLE IF NOT EXISTS artist_registration_sources (
     artistId TEXT PRIMARY KEY,
     source TEXT NOT NULL,
