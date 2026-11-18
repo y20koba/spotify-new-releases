@@ -167,3 +167,35 @@ test("除外した保存済みIDは固定名の再検索も増やさない", asy
     assert.equal(app.albumIds().includes("candidate"), false);
   } finally { app.db.close(); }
 });
+
+
+test("Spotifyから取得した作品の観測情報がSQLiteに保存される", async () => {
+  const app = setup();
+
+  try {
+    const response = await app.get();
+    assert.equal(response.status, 200);
+
+    // モックAPIから作品を取得したアーティストを確認
+    assert.deepEqual(app.albumIds(), ["other"]);
+
+    // route.ts が観測結果を保存したか確認
+    const observation = app.db.prepare(`
+      SELECT artistId, genre, oldestObservedReleaseDate,
+             observedReleaseCount
+      FROM artist_discovery_scores
+      WHERE artistId = ? AND genre = ?
+    `).get("other", "rnb");
+
+    assert.ok(observation, "観測情報がSQLiteに保存されている");
+    assert.equal(observation.artistId, "other");
+    assert.equal(observation.genre, "rnb");
+    assert.equal(observation.observedReleaseCount, 1);
+    assert.equal(
+      observation.oldestObservedReleaseDate,
+      new Date().toISOString().slice(0, 10)
+    );
+  } finally {
+    app.db.close();
+  }
+});
