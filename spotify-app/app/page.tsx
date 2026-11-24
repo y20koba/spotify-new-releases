@@ -20,6 +20,17 @@ type UnclassifiedArtist = {
   discoveryQuery: string;
   status: string;
   createdAt: string;
+  observation: {
+    artistId: string;
+    genre: string;
+    oldestObservedReleaseDate: string | null;
+    observedReleaseCount: number;
+    evaluatedAt: string;
+  } | null;
+  evaluation: {
+    priority: "high" | "medium" | "low" | "unknown";
+    reason: string;
+  };
 };
 
 type ArtistCandidate = {
@@ -56,6 +67,25 @@ const unclassifiedStatusFilters = [
   { value: "approved", label: "承認済み" },
   { value: "rejected", label: "除外済み" },
 ] as const;
+
+const discoveryPriorityStyles = {
+  high: {
+    label: "高",
+    className: "bg-green-500/15 text-green-400",
+  },
+  medium: {
+    label: "中",
+    className: "bg-yellow-500/15 text-yellow-400",
+  },
+  low: {
+    label: "低",
+    className: "bg-zinc-700 text-zinc-300",
+  },
+  unknown: {
+    label: "未評価",
+    className: "bg-zinc-800 text-zinc-400",
+  },
+} as const;
 
 function getLocalDateString() {
   const today = new Date();
@@ -815,6 +845,51 @@ export default function Home() {
                       <p className="mt-1 text-sm text-zinc-400">
                         判定状態：{artist.status}
                       </p>
+
+                      <div className="mt-4 space-y-2 rounded-lg border border-zinc-800 bg-[#121212] p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold">
+                            調査優先度：
+                          </span>
+
+                          <span
+                            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                              discoveryPriorityStyles[
+                                artist.evaluation?.priority ?? "unknown"
+                              ].className
+                            }`}
+                          >
+                            {
+                              discoveryPriorityStyles[
+                                artist.evaluation?.priority ?? "unknown"
+                              ].label
+                            }
+                          </span>
+                        </div>
+
+                        <p className="text-sm text-zinc-400">
+                          観測作品数：
+                          {artist.observation
+                            ? `${artist.observation.observedReleaseCount}件`
+                            : "未取得"}
+                        </p>
+
+                        <p className="text-sm text-zinc-400">
+                          最古の観測作品：
+                          {artist.observation?.oldestObservedReleaseDate
+                            ?? "不明"}
+                        </p>
+
+                        <p className="text-sm text-zinc-400">
+                          評価理由：
+                          {artist.evaluation?.reason
+                            ?? "観測情報が不足しています"}
+                        </p>
+
+                        <p className="text-xs text-zinc-500">
+                          ※新人であることを断定する評価ではありません。
+                        </p>
+                      </div>
 
                       <div className="mt-4 flex flex-wrap gap-2">
                         <button
