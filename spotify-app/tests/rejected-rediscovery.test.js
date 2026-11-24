@@ -24,6 +24,7 @@ function setup({ saved = false, manual = false, rejectedGenre = "rnb", rateLimit
     db.prepare("INSERT INTO artist_registration_sources (artistId, source) VALUES ('candidate', 'manual')").run();
   }
   const calls = [];
+  const logs = [];
   const source = fs.readFileSync(path.join(__dirname, "../app/api/spotify-search/route.ts"), "utf8");
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
@@ -39,7 +40,10 @@ function setup({ saved = false, manual = false, rejectedGenre = "rnb", rateLimit
     },
     URL, URLSearchParams, Buffer,
     process: { env: { SPOTIFY_CLIENT_ID: "test", SPOTIFY_CLIENT_SECRET: "test" } },
-    console: { log() {}, error() {} },
+    console: {
+      log(...args) { logs.push(args); },
+      error() { },
+    },
     async fetch(input) {
       const url = new URL(input);
       calls.push(url);
@@ -53,22 +57,28 @@ function setup({ saved = false, manual = false, rejectedGenre = "rnb", rateLimit
             status: 429, headers: { "Retry-After": "120" },
           });
         }
-        return Response.json({ artists: { items: url.searchParams.get("q") === "Japanese R&B"
-          ? [{ id: "candidate", name: "Candidate", genres: ["soul"] },
-            { id: "other", name: "Other", genres: ["soul"] }]
-          : [] } });
+        return Response.json({
+          artists: {
+            items: url.searchParams.get("q") === "Japanese R&B"
+              ? [{ id: "candidate", name: "Candidate", genres: ["soul"] },
+              { id: "other", name: "Other", genres: ["soul"] }]
+              : []
+          }
+        });
       }
       assert.match(url.pathname, /^\/v1\/artists\/[^/]+\/albums$/);
       const id = url.pathname.split("/")[3];
-      return Response.json({ items: [{
-        id: `album-${id}`, name: id, release_date: new Date().toISOString().slice(0, 10),
-        album_type: "single", images: [], artists: [{ name: id }],
-        external_urls: { spotify: "https://open.spotify.com/album/mock" },
-      }] });
+      return Response.json({
+        items: [{
+          id: `album-${id}`, name: id, release_date: new Date().toISOString().slice(0, 10),
+          album_type: "single", images: [], artists: [{ name: id }],
+          external_urls: { spotify: "https://open.spotify.com/album/mock" },
+        }]
+      });
     },
   });
   return {
-    db, calls,
+    db, calls, logs,
     get: () => exports.GET(new Request("http://localhost/api/spotify-search?genre=rnb")),
     albumIds: () => calls.filter((url) => url.pathname.endsWith("/albums"))
       .map((url) => url.pathname.split("/")[3]),
@@ -195,6 +205,114 @@ test("Spotifyから取得した作品の観測情報がSQLiteに保存される"
       observation.oldestObservedReleaseDate,
       new Date().toISOString().slice(0, 10)
     );
+  } finally {
+    app.db.close();
+  }
+});
+function getMetricsLogs(app) {
+  return app.logs
+    .filter(([value]) =>
+      value &&
+      typeof value === "object" &&
+      typeof value.totalRequests === "number" &&
+      typeof value.rateLimitCount === "number"
+    )
+    .map(([value]) => value);
+}
+
+test("通常取得時のAPI通信回数が実際の呼び出し回数と一致する", async () => {
+  const app = setup();
+
+  try {
+    const response = await app.get();
+    assert.equal(response.status, 200);
+
+    const logs = getMetricsLogs(app);
+    assert.equal(logs.length, 1);
+
+    const metrics = logs[0];
+
+    assert.equal(metrics.genre, "rnb");
+    assert.equal(metrics.totalRequests, app.calls.length);
+    assert.equal(metrics.tokenRequests, 1);
+    assert.equal(metrics.webApiRequests, app.calls.length - 1);
+    assert.equal(metrics.albumFetchRequests, app.albumIds().length);
+    assert.equal(
+      metrics.artistSearchRequests + metrics.artistDiscoveryRequests,
+      app.calls.filter(url => url.pathname === "/v1/search").length
+    );
+    assert.equal(metrics.rateLimitCount, 0);
+  } finally {
+    app.db.close();
+  }
+});
+
+test("キャッシュ利用時はAPI通信回数が0になる", async () => {
+  const app = setup();
+
+  try {
+    assert.equal((await app.get()).status, 200);
+
+    const count = app.calls.length;
+
+    assert.equal((await app.get()).status, 200);
+    assert.equal(app.calls.length, count);
+
+    const logs = getMetricsLogs(app);
+    assert.equal(logs.length, 2);
+
+    const metrics = logs[1];
+
+    assert.equal(metrics.totalRequests, 0);
+    assert.equal(metrics.webApiRequests, 0);
+    assert.equal(metrics.tokenRequests, 0);
+    assert.equal(metrics.artistSearchRequests, 0);
+    assert.equal(metrics.artistDiscoveryRequests, 0);
+    assert.equal(metrics.albumFetchRequests, 0);
+    assert.equal(metrics.rateLimitCount, 0);
+  } finally {
+    app.db.close();
+  }
+});
+
+test("Spotifyの429発生時も通信回数と制限回数が記録される", async () => {
+  const app = setup({ rateLimitDiscovery: true });
+
+  try {
+    assert.equal((await app.get()).status, 429);
+
+    const logs = getMetricsLogs(app);
+    assert.equal(logs.length, 1);
+
+    const metrics = logs[0];
+
+    assert.equal(metrics.totalRequests, app.calls.length);
+    assert.equal(metrics.rateLimitCount, 1);
+    assert.equal(metrics.albumFetchRequests, 0);
+    assert.ok(metrics.artistDiscoveryRequests > 0);
+  } finally {
+    app.db.close();
+  }
+});
+
+test("API制限中の再取得では通信せず計測値もリセットされる", async () => {
+  const app = setup({ rateLimitDiscovery: true });
+
+  try {
+    assert.equal((await app.get()).status, 429);
+
+    const count = app.calls.length;
+
+    assert.equal((await app.get()).status, 429);
+    assert.equal(app.calls.length, count);
+
+    const logs = getMetricsLogs(app);
+    assert.equal(logs.length, 2);
+
+    assert.equal(logs[0].rateLimitCount, 1);
+    assert.equal(logs[1].totalRequests, 0);
+    assert.equal(logs[1].webApiRequests, 0);
+    assert.equal(logs[1].rateLimitCount, 0);
   } finally {
     app.db.close();
   }
