@@ -1,6 +1,8 @@
 
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
+import { getArtistObservation } from "@/lib/artist-discovery-store";
+import { evaluateArtistDiscovery } from "@/lib/artist-discovery-evaluation";
 import {
     reviewUnclassifiedArtist,
     ReviewError,
@@ -30,7 +32,31 @@ export async function GET() {
             ORDER BY createdAt DESC, name ASC
         `).all() as UnclassifiedArtist[];
 
-        return NextResponse.json({ artists });
+        const now = new Date();
+
+        const evaluatedArtists = artists.map((artist) => {
+            const observation = getArtistObservation(
+                db,
+                artist.id,
+                artist.sourceGenre
+            );
+
+            const evaluation = evaluateArtistDiscovery(
+                observation,
+                now
+            );
+
+            return {
+                ...artist,
+                observation: observation ?? null,
+                evaluation,
+            };
+        });
+
+        return NextResponse.json({
+            artists: evaluatedArtists,
+        });
+
     } catch (error) {
         console.error("未分類アーティスト取得エラー:", error);
 
