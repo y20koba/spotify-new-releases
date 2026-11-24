@@ -7,6 +7,7 @@ import { isDiscoveryCacheExpired } from "@/lib/artist-discovery-cache";
 import { calculateRetryUntil } from "@/lib/spotify-rate-limit";
 import { getRejectedArtistIds } from "@/lib/unclassified-artist-review";
 import { createSpotifyApiMetrics, type SpotifyRequestType } from "@/lib/spotify-api-metrics";
+import { createReleaseFetchMetrics } from "@/lib/release-fetch-metrics";
 
 // 登録済みアーティストをSQLiteから取得する
 function getRegisteredArtists(genre: string) {
@@ -301,6 +302,7 @@ const japaneseArtistSeeds: Record<string, string[]> = {
 
 export async function GET(request: Request) {
     const metrics = createSpotifyApiMetrics();
+    const releaseMetrics = createReleaseFetchMetrics();
 
     async function measuredFetch(
         type: SpotifyRequestType,
@@ -980,6 +982,7 @@ export async function GET(request: Request) {
                         genre,
                         observation
                     );
+                    releaseMetrics.recordReleases(albums);
 
                     allAlbums.push(...albums);
                 }
@@ -1255,10 +1258,13 @@ export async function GET(request: Request) {
             );
         }
     } finally {
+        const apiSummary = metrics.getSummary();
+
         console.log("=== Spotify API Metrics ===");
         console.log({
             genre: new URL(request.url).searchParams.get("genre"),
-            ...metrics.getSummary(),
+            ...apiSummary,
+            ...releaseMetrics.getSummary(apiSummary.webApiRequests),
         });
         console.log("===========================");
     }

@@ -6,9 +6,17 @@ const vm = require("node:vm");
 const ts = require("typescript");
 const Database = require("better-sqlite3");
 const { reviewUnclassifiedArtist } = require("../lib/unclassified-artist-review.ts");
+const { getJstDateString } = require("../lib/release-fetch-metrics.ts");
 
 // 実際のrouteを実行し、DBと全fetchを差し替える。本番DBは開かない。
-function setup({ saved = false, manual = false, rejectedGenre = "rnb", rateLimitDiscovery = false } = {}) {
+function setup({
+  saved = false,
+  manual = false,
+  rejectedGenre = "rnb",
+  rateLimitDiscovery = false,
+  customReleases = false,
+  rateLimitAlbums = false,
+} = {}) {
   const db = new Database(":memory:");
   const schema = fs.readFileSync(path.join(__dirname, "../lib/db.ts"), "utf8")
     .match(/db\.exec\(`([\s\S]*?)`\);/)[1];
@@ -68,6 +76,46 @@ function setup({ saved = false, manual = false, rejectedGenre = "rnb", rateLimit
       }
       assert.match(url.pathname, /^\/v1\/artists\/[^/]+\/albums$/);
       const id = url.pathname.split("/")[3];
+            if (
+        rateLimitAlbums &&
+        calls.filter((url) =>
+          url.pathname.endsWith("/albums")
+        ).length >= 2
+      ) {
+        return Response.json(
+          { error: "rate limited" },
+          {
+            status: 429,
+            headers: { "Retry-After": "120" },
+          }
+        );
+      }
+
+      if (customReleases) {
+        const today = getJstDateString();
+
+        function makeRelease(releaseId, date, type) {
+          return {
+            id: releaseId,
+            name: releaseId,
+            release_date: date,
+            album_type: type,
+            images: [],
+            artists: [{ name: id }],
+            external_urls: {
+              spotify: "https://open.spotify.com/album/mock",
+            },
+          };
+        }
+
+        return Response.json({
+          items: [
+            makeRelease("shared-single", today, "single"),
+            makeRelease(`album-${id}`, today, "album"),
+            makeRelease(`old-${id}`, "2020-01-01", "single"),
+          ],
+        });
+      }
       return Response.json({
         items: [{
           id: `album-${id}`, name: id, release_date: new Date().toISOString().slice(0, 10),
@@ -313,6 +361,108 @@ test("API制限中の再取得では通信せず計測値もリセットされ�
     assert.equal(logs[1].totalRequests, 0);
     assert.equal(logs[1].webApiRequests, 0);
     assert.equal(logs[1].rateLimitCount, 0);
+  } finally {
+    app.db.close();
+  }
+});
+
+test("当日の新譜数と取得効率が正しく計測される", async () => {
+  const app = setup({ customReleases: true });
+
+  try {
+    assert.equal((await app.get()).status, 200);
+
+    const metrics = getMetricsLogs(app)[0];
+
+    assert.equal(metrics.targetDate, getJstDateString());
+    assert.equal(metrics.fetchedReleaseCount, 3);
+    assert.equal(metrics.todayReleaseCount, 2);
+    assert.equal(metrics.todaySingleCount, 1);
+    assert.equal(metrics.todayAlbumCount, 1);
+
+    assert.equal(
+      metrics.releasesPerWebApiRequest,
+      Number((2 / metrics.webApiRequests).toFixed(3))
+    );
+  } finally {
+    app.db.close();
+  }
+});
+
+test("複数アーティストの共通作品は重複計測されない", async () => {
+  const app = setup({
+    customReleases: true,
+    rejectedGenre: "rock",
+  });
+
+  try {
+    assert.equal((await app.get()).status, 200);
+    assert.equal(app.albumIds().length, 2);
+
+    const metrics = getMetricsLogs(app)[0];
+
+    assert.equal(metrics.fetchedReleaseCount, 5);
+    assert.equal(metrics.todayReleaseCount, 3);
+    assert.equal(metrics.todaySingleCount, 1);
+    assert.equal(metrics.todayAlbumCount, 2);
+
+    assert.equal(
+      metrics.releasesPerWebApiRequest,
+      Number((3 / metrics.webApiRequests).toFixed(3))
+    );
+  } finally {
+    app.db.close();
+  }
+});
+
+test("キャッシュ利用時は新規取得作品として計測しない", async () => {
+  const app = setup({ customReleases: true });
+
+  try {
+    assert.equal((await app.get()).status, 200);
+    assert.equal((await app.get()).status, 200);
+
+    const logs = getMetricsLogs(app);
+
+    assert.equal(logs.length, 2);
+    assert.equal(logs[0].todayReleaseCount, 2);
+
+    const metrics = logs[1];
+
+    assert.equal(metrics.webApiRequests, 0);
+    assert.equal(metrics.fetchedReleaseCount, 0);
+    assert.equal(metrics.todayReleaseCount, 0);
+    assert.equal(metrics.todaySingleCount, 0);
+    assert.equal(metrics.todayAlbumCount, 0);
+    assert.equal(metrics.releasesPerWebApiRequest, 0);
+  } finally {
+    app.db.close();
+  }
+});
+
+test("作品取得途中の429でも取得済み作品数が計測される", async () => {
+  const app = setup({
+    customReleases: true,
+    rejectedGenre: "rock",
+    rateLimitAlbums: true,
+  });
+
+  try {
+    assert.equal((await app.get()).status, 429);
+    assert.equal(app.albumIds().length, 2);
+
+    const metrics = getMetricsLogs(app)[0];
+
+    assert.equal(metrics.rateLimitCount, 1);
+    assert.equal(metrics.fetchedReleaseCount, 3);
+    assert.equal(metrics.todayReleaseCount, 2);
+    assert.equal(metrics.todaySingleCount, 1);
+    assert.equal(metrics.todayAlbumCount, 1);
+
+    assert.equal(
+      metrics.releasesPerWebApiRequest,
+      Number((2 / metrics.webApiRequests).toFixed(3))
+    );
   } finally {
     app.db.close();
   }
